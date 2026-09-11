@@ -1,13 +1,13 @@
 Unhinged Debt Collector — MVP Plan
 
 A. MVP Feature List
-1. Debt Input Form** — structured fields for: person's name, amount owed, reason for debt, days/weeks overdue, relationship to user, prior reminder status (yes/no), optional free-text context.
-2. AI Context Interpretation** — the AI reads all inputs (not just amount/time) and forms an internal assessment of the situation (e.g. "small amount, close friend, first reminder, no prior contact → keep it light").
-3. AI Escalation Decision** — the AI picks a *default* tone/escalation level based on the interpreted context, rather than the user always choosing it manually.
-4. Personalized Message Generation** — a WhatsApp-style message written in the chosen tone, referencing the specific details provided (name, amount, reason, time overdue).
-5. Manual Escalation Override** — user can select a different level (Casual / Funny / Passive-Aggressive / Unhinged) and regenerate in that tone.
-6. Regenerate Button** — user can request a new variation at the *same* escalation level if they don't like the phrasing.
-7. Copy-to-Clipboard Output** — final message is displayed in a clean, copyable format for manual sending.
+1. Debt Input Form — structured fields for: person's name, amount owed, reason for debt, days/weeks overdue, relationship to user, prior reminder status (yes/no), optional free-text context.
+2. AI Context Interpretation — the AI reads all inputs (not just amount/time) and forms an internal assessment of the situation (e.g. "small amount, close friend, first reminder, no prior contact → keep it light").
+3. AI Escalation Decision — the AI picks a *default* tone/escalation level based on the interpreted context, rather than the user always choosing it manually.
+4. Personalized Message Generation — a WhatsApp-style message written in the chosen tone, referencing the specific details provided (name, amount, reason, time overdue).
+5. Manual Escalation Override — user can select a different level (Casual / Funny / Passive-Aggressive / Unhinged) and regenerate in that tone.
+6. Regenerate Button — user can request a new variation at the *same* escalation level if they don't like the phrasing.
+7. Copy-to-Clipboard Output — final message is displayed in a clean, copyable format for manual sending.
 
 B. Exact User Flow
 
@@ -73,7 +73,7 @@ A single-agent, two-step reasoning pipeline is enough for this MVP — no multi-
    - Input: structured fields + free-text context
    - Output: a short internal assessment (e.g. relationship closeness score, urgency level, recommended tone) — this can be returned as structured JSON (tone, reasoning, confidence)
 
-2. Message Generator step** (AI call #2, or second reasoning pass)
+2. Message Generator step (AI call #2, or second reasoning pass)
    - Input: original debt details + the tone decided in step 1 (or user-overridden tone) + prior generated message if regenerating
    - Output: final WhatsApp-style message text
 
