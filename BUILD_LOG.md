@@ -14,4 +14,4 @@ Defined the AI-involvement level
 Defined the initial technical architecture and tech stack
 
 Commit 2- Removing all the unneeded  "*"s  from the text
-Commit 3- Cleaning upo the text using paragraphs 
+Commit 3- Cleaning up the text using paragraphs 
