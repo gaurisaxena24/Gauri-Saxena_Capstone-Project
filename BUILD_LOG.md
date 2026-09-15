@@ -1,9 +1,9 @@
 ## Build Log
 * Commit 1 — Capstone planning and repository setup*
 
-Date: 11 September 2026
-Time spent: ~1 hour
-Rough tokens used: 6 percent- so ~3,000–3,500 tokens (estimated)
+- Date: 11 September 2026
+- Time spent: ~1 hour
+- Rough tokens used: 6 percent- so ~3,000–3,500 tokens (estimated)
 
 What shipped:
 Set up the capstone GitHub repository
