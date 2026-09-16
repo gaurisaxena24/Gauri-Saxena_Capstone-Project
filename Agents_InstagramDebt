@@ -2,9 +2,7 @@
 
 ## Goal
 
-Build the Unhinged Debt Collector using a **sequential multi-agent workflow**.
-
-A **Super Agent** delegates the task to three specialized agents. Each agent completes one step and passes its output to the next agent.
+Build the Unhinged Debt Collector using a sequential multi-agent workflow.
 
 **User → Super Agent → Context Agent → Escalation Agent → Message Agent → Super Agent → User**
 
@@ -15,15 +13,14 @@ A **Super Agent** delegates the task to three specialized agents. Each agent com
 **Role:** Delegate and coordinate.
 
 The Super Agent:
+- Receives the user's debt information
+- Delegates the context analysis
+- Passes the result to the Escalation Agent
+- Passes the escalation decision to the Message Agent
+- Collects the final message
+- Returns the result to the user
 
-* Receives the user's debt information
-* Delegates the context analysis
-* Passes the result to the Escalation Agent
-* Passes the escalation decision to the Message Agent
-* Collects the final message
-* Returns the result to the user
-
-The Super Agent should **coordinate the workflow, not make the individual decisions itself.**
+The Super Agent coordinates the workflow rather than making the individual decisions itself.
 
 ---
 
@@ -33,21 +30,21 @@ The Super Agent should **coordinate the workflow, not make the individual decisi
 
 ### Receives
 
-* Person's name
-* Amount owed
-* Reason for debt
-* Time overdue
-* Relationship
-* Previous reminder status
-* Optional context
+- Person's name
+- Amount owed
+- Reason for debt
+- Time overdue
+- Relationship
+- Previous reminder status
+- Optional context
 
 ### Decides
 
-* How serious the situation is
-* How urgent it is
-* How sensitive the relationship is
-* Whether the user's patience has already been tested
-* Any relevant social context
+- How serious the situation is
+- How urgent it is
+- How sensitive the relationship is
+- Whether the user's patience has already been tested
+- Relevant social context
 
 ### Returns
 
@@ -65,28 +62,26 @@ A short structured assessment that is passed to the Escalation Agent.
 
 ### Receives
 
-* Original debt information
-* Context Agent's assessment
+- Original debt information
+- Context Agent's assessment
 
 ### Chooses
 
-* Casual
-* Funny
-* Passive-Aggressive
-* Unhinged
+- Casual
+- Funny
+- Passive-Aggressive
+- Unhinged
 
-The decision should be based on the **context**, not simply selected by the user at the start.
+The decision should be based on the context rather than simply selected by the user.
 
 ### Returns
 
-* Recommended tone
-* Short reasoning for the decision
+- Recommended tone
+- Short reasoning
 
 **Example:**
 
 > **Passive-Aggressive** — The relationship is close, but a previous reminder was ignored.
-
-This decision is then passed to the Message Agent.
 
 ---
 
@@ -96,35 +91,35 @@ This decision is then passed to the Message Agent.
 
 ### Receives
 
-* Original debt information
-* Context Agent's assessment
-* Escalation Agent's decision
+- Original debt information
+- Context Agent's assessment
+- Escalation Agent's decision
 
 ### Generates
 
-A personalized, Instagram-style message that:
+A personalized Instagram-style message that:
 
-* Uses the actual debt details
-* References the relevant context
-* Matches the selected escalation level
-* Sounds natural and conversational
-* Does not invent information
+- Uses the actual debt details
+- References relevant context
+- Matches the selected escalation level
+- Sounds natural and conversational
+- Does not invent information
 
-The Message Agent **does not decide the tone**. It follows the decision made by the Escalation Agent.
+The Message Agent does not decide the tone. It follows the Escalation Agent's decision.
 
 ---
 
 ## Sequential Delegation
 
-| Step | Agent                | Job                      | Output                       |
-| ---- | -------------------- | ------------------------ | ---------------------------- |
-| 1    | **Super Agent**      | Delegate the task        | Sends input to Context Agent |
-| 2    | **Context Agent**    | Understand the situation | Context assessment           |
-| 3    | **Escalation Agent** | Decide the tone          | Recommended escalation       |
-| 4    | **Message Agent**    | Write the message        | Final message                |
-| 5    | **Super Agent**      | Return the result        | Message shown to user        |
+| Step | Agent | Job | Output |
+|---|---|---|---|
+| 1 | Super Agent | Delegate | Sends input to Context Agent |
+| 2 | Context Agent | Understand | Context assessment |
+| 3 | Escalation Agent | Decide | Recommended tone |
+| 4 | Message Agent | Generate | Final message |
+| 5 | Super Agent | Coordinate | Returns result to user |
 
-### The core logic
+### Core Logic
 
 **Understand → Decide → Generate**
 
@@ -146,9 +141,9 @@ The user's selected tone replaces the AI's recommendation.
 
 When the user clicks **Regenerate**, the Message Agent receives:
 
-* Original debt information
-* Current tone
-* Previous generated message
+- Original debt information
+- Current tone
+- Previous generated message
 
 It generates a new variation while keeping the same escalation level.
 
@@ -156,22 +151,26 @@ It generates a new variation while keeping the same escalation level.
 
 ## Agent Responsibilities
 
-| Agent                | Responsibility        |
-| -------------------- | --------------------- |
-| **Super Agent**      | Delegate + coordinate |
-| **Context Agent**    | Understand            |
-| **Escalation Agent** | Decide                |
-| **Message Agent**    | Generate              |
+| Agent | Responsibility |
+|---|---|
+| Super Agent | Delegate + coordinate |
+| Context Agent | Understand |
+| Escalation Agent | Decide |
+| Message Agent | Generate |
 
-The important distinction is that **each agent has one job**.
+---
+
+## Why Sequential Agents?
 
 Instead of:
 
 **Input → LLM → Message**
 
-the system becomes:
+the system works as:
 
 **Input → Understand context → Decide tone → Generate message**
+
+Each agent has one responsibility, and the output of one agent becomes the input for the next.
 
 This makes the AI's decision-making and sequential delegation visible in the project.
 
@@ -179,11 +178,11 @@ This makes the AI's decision-making and sequential delegation visible in the pro
 
 ## MVP Scope
 
-The MVP requires only:
+The MVP requires:
 
-* 1 Super Agent
-* 1 Context Agent
-* 1 Escalation Agent
-* 1 Message Agent
+- 1 Super Agent
+- 1 Context Agent
+- 1 Escalation Agent
+- 1 Message Agent
 
 No parallel agents, persistent memory, database, Splitwise integration, or automatic Instagram sending are required.
