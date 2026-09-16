@@ -5,6 +5,11 @@ export const sendTelegramMessageInputSchema = z.object({
     .union([z.string(), z.number()])
     .describe("Telegram chat ID to send the message to"),
   message: z.string().min(1).describe("Text content of the message to send"),
+  confirm: z
+    .boolean()
+    .describe(
+      "Safety check. Must be explicitly set to true or no Telegram request will be made."
+    ),
 });
 
 export type SendTelegramMessageInput = z.infer<
@@ -27,6 +32,17 @@ function redactToken(token: string, text: string): string {
 export async function sendTelegramMessage(
   input: SendTelegramMessageInput
 ): Promise<SendTelegramMessageResult> {
+  const { chatId, message, confirm } =
+    sendTelegramMessageInputSchema.parse(input);
+
+  if (!confirm) {
+    return {
+      success: false,
+      message:
+        "Aborted: confirm was false. No Telegram request was made.",
+    };
+  }
+
   const token = process.env.TELEGRAM_BOT_TOKEN;
 
   if (!token || token === "your_token_here") {
@@ -37,7 +53,6 @@ export async function sendTelegramMessage(
     };
   }
 
-  const { chatId, message } = sendTelegramMessageInputSchema.parse(input);
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
 
   try {

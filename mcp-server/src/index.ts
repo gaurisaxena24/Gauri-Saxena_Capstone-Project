@@ -13,7 +13,8 @@ const server = new McpServer({
 
 server.tool(
   "send_telegram_message",
-  "Send a text message to a Telegram chat via the Telegram Bot API.",
+  "Send a text message to a Telegram chat via the Telegram Bot API. " +
+    "Requires confirm=true; otherwise no request is sent.",
   sendTelegramMessageInputSchema.shape,
   async (input) => {
     const result = await sendTelegramMessage(input);
