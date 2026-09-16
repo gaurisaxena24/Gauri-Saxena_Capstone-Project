@@ -3,7 +3,6 @@
 ## Goal
 
 Build the Unhinged Debt Collector using a sequential multi-agent workflow.
-
 **User → Super Agent → Context Agent → Escalation Agent → Message Agent → Super Agent → User**
 
 ---
@@ -185,4 +184,4 @@ The MVP requires:
 - 1 Escalation Agent
 - 1 Message Agent
 
-No parallel agents, persistent memory, database, Splitwise integration, or automatic Instagram sending are required.
+No parallel agents, persistent memory, database, Splitwise integration, or automatic msgs sending are required.
