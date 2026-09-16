@@ -24,7 +24,7 @@ Unhinged Debt Collector — MVP Plan
       ↓
 5. AI selects a recommended escalation level + justifies it briefly
       ↓
-6. AI generates a WhatsApp-style message in that tone
+6. AI generates a Instagram-style message in that tone
       ↓
 7. Message displayed to user with:
    - The AI's chosen tone (editable)
@@ -33,7 +33,7 @@ Unhinged Debt Collector — MVP Plan
       ↓
 8. User optionally changes tone → AI regenerates in new tone
       ↓
-9. User copies final message and sends manually via WhatsApp
+9. User copies final message and sends manually via Instagram
 
 
 ## C. What Information the AI Receives
@@ -75,7 +75,7 @@ A single-agent, two-step reasoning pipeline is enough for this MVP — no multi-
 
 2. Message Generator step (AI call #2, or second reasoning pass)
    - Input: original debt details + the tone decided in step 1 (or user-overridden tone) + prior generated message if regenerating
-   - Output: final WhatsApp-style message text
+   - Output: final Instagram-style message text
 
 This can technically be done as one LLM call with a structured JSON output (`{tone, reasoning, message}`) for MVP simplicity, or split into two calls if you want to visibly show the "AI reasoning" step to demonstrate decision-making for your assignment (recommended — makes the AI's involvement visible and gradable).
 
@@ -97,7 +97,7 @@ These are strong candidates for a "Phase 2 / Advanced Version" section, showing 
 
 ## G. Paragraph for plan.md → "MVP Scope"
 
-The MVP for Unhinged Debt Collector focuses on a single core flow: the user submits structured details about an outstanding debt (person, amount, reason, time overdue, relationship, and prior reminder status) along with optional free-text context. The AI interprets this information to assess the social context of the situation and recommends an appropriate escalation level — Casual, Funny, Passive-Aggressive, or Unhinged — before generating a personalized, Instagram-style reminder message. The user can override the AI's recommended tone, regenerate the message for a new variation, and copy the final result to send manually. The MVP intentionally excludes automated sending, third-party integrations (WhatsApp API, Splitwise), user accounts, and persistent memory, keeping the scope narrow while still requiring genuine AI reasoning over context rather than simple template filling.
+The MVP for Unhinged Debt Collector focuses on a single core flow: the user submits structured details about an outstanding debt (person, amount, reason, time overdue, relationship, and prior reminder status) along with optional free-text context. The AI interprets this information to assess the social context of the situation and recommends an appropriate escalation level — Casual, Funny, Passive-Aggressive, or Unhinged — before generating a personalized, Instagram-style reminder message. The user can override the AI's recommended tone, regenerate the message for a new variation, and copy the final result to send manually. The MVP intentionally excludes automated sending, third-party integrations (Instagram API, Splitwise), user accounts, and persistent memory, keeping the scope narrow while still requiring genuine AI reasoning over context rather than simple template filling.
 
 ## H. Why This Qualifies as High AI Involvement
 
