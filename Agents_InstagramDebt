@@ -2,347 +2,188 @@
 
 ## Goal
 
-Implement the Unhinged Debt Collector as a **sequential multi-agent workflow**.
+Build the Unhinged Debt Collector using a **sequential multi-agent workflow**.
 
-The system should have one **Super Agent** that delegates the task to three specialized agents.
+A **Super Agent** delegates the task to three specialized agents. Each agent completes one step and passes its output to the next agent.
 
-```text
-User
-  ↓
-Super Agent
-  ↓
-Context Agent
-  ↓
-Escalation Agent
-  ↓
-Message Agent
-  ↓
-Super Agent
-  ↓
-User
-```
+**User → Super Agent → Context Agent → Escalation Agent → Message Agent → Super Agent → User**
 
 ---
 
 ## 1. Super Agent — Orchestrator
 
-### Responsibility
+**Role:** Delegate and coordinate.
 
-The Super Agent coordinates the entire workflow.
+The Super Agent:
 
-It should **delegate** tasks rather than performing all the reasoning itself.
+* Receives the user's debt information
+* Delegates the context analysis
+* Passes the result to the Escalation Agent
+* Passes the escalation decision to the Message Agent
+* Collects the final message
+* Returns the result to the user
 
-### It does:
-
-1. Receives the user's debt information.
-2. Sends the information to the Context Agent.
-3. Receives the Context Agent's output.
-4. Passes the original information + Context Agent output to the Escalation Agent.
-5. Receives the Escalation Agent's decision.
-6. Passes the original information + previous outputs to the Message Agent.
-7. Receives the generated message.
-8. Returns the final result to the user.
-
-### It does NOT:
-
-* Decide the escalation tone itself.
-* Write the final message itself.
-* Automatically send the message.
+The Super Agent should **coordinate the workflow, not make the individual decisions itself.**
 
 ---
 
-# 2. Context Agent
+## 2. Context Agent — Understand
 
-### Responsibility
+**Role:** Understand the social situation.
 
-**Understand the situation.**
+### Receives
 
-The Context Agent interprets the social context behind the debt.
+* Person's name
+* Amount owed
+* Reason for debt
+* Time overdue
+* Relationship
+* Previous reminder status
+* Optional context
 
-### Input
-
-```text
-Person's name
-Amount owed
-Reason for debt
-Time overdue
-Relationship to user
-Previous reminder status
-Optional free-text context
-```
-
-### Task
-
-Determine:
+### Decides
 
 * How serious the situation is
 * How urgent it is
 * How sensitive the relationship is
 * Whether the user's patience has already been tested
-* Any important contextual factors
+* Any relevant social context
 
-### Example output
+### Returns
 
-```json
-{
-  "seriousness": "medium",
-  "urgency": "medium",
-  "relationship_sensitivity": "high",
-  "patience_tested": true,
-  "summary": "Close friend, medium-sized debt, and a previous reminder was ignored."
-}
-```
+A short structured assessment that is passed to the Escalation Agent.
 
-The Context Agent **does not generate the message**.
+**Example:**
+
+> Close friend, medium-sized debt, previous reminder was ignored, and the situation is moderately urgent.
 
 ---
 
-# 3. Escalation Agent
+## 3. Escalation Agent — Decide
 
-### Responsibility
+**Role:** Decide the appropriate escalation level.
 
-**Decide the appropriate tone.**
+### Receives
 
-The Escalation Agent receives both the original debt information and the Context Agent's assessment.
+* Original debt information
+* Context Agent's assessment
 
-### Input
-
-```text
-Original user information
-+
-Context Agent assessment
-```
-
-### Task
-
-Choose exactly one escalation level:
+### Chooses
 
 * Casual
 * Funny
 * Passive-Aggressive
 * Unhinged
 
-The decision should be based on the context rather than simply asking the user to choose the tone first.
+The decision should be based on the **context**, not simply selected by the user at the start.
 
-### Example output
+### Returns
 
-```json
-{
-  "tone": "Passive-Aggressive",
-  "reason": "The relationship is close, but a previous reminder was ignored."
-}
-```
+* Recommended tone
+* Short reasoning for the decision
 
-The Escalation Agent **does not write the final message**.
+**Example:**
 
----
+> **Passive-Aggressive** — The relationship is close, but a previous reminder was ignored.
 
-# 4. Message Agent
-
-### Responsibility
-
-**Write the actual debt reminder.**
-
-The Message Agent receives:
-
-```text
-Original debt information
-+
-Context Agent assessment
-+
-Escalation Agent decision
-```
-
-### Task
-
-Generate a personalized Instagram-style debt reminder.
-
-The message should:
-
-* Use the person's name
-* Reference the actual amount
-* Reference the reason when appropriate
-* Reference how overdue it is
-* Reflect the relationship
-* Match the escalation level
-* Use the provided context
-* Sound natural rather than like a generic template
-
-The Message Agent should follow the tone chosen by the Escalation Agent.
-
-### Example
-
-```text
-bro I love you but at this point the ₹850 has been
-living with you longer than I have.
-
-you said you'd send it after payday.
-
-payday has clearly moved on.
-my ₹850 has not.
-```
+This decision is then passed to the Message Agent.
 
 ---
 
-# 5. Sequential Delegation
+## 4. Message Agent — Generate
 
-The agents must work **sequentially**, not independently.
+**Role:** Write the actual debt reminder.
 
-### Full workflow
+### Receives
 
-```text
-                    USER
-                      │
-                      ▼
-              ┌───────────────┐
-              │  SUPER AGENT  │
-              │  Orchestrator │
-              └───────┬───────┘
-                      │
-                      ▼
-             ┌─────────────────┐
-             │  CONTEXT AGENT  │
-             │ Understand      │
-             │ the situation   │
-             └────────┬────────┘
-                      │
-              Context assessment
-                      │
-                      ▼
-           ┌────────────────────┐
-           │ ESCALATION AGENT   │
-           │ Decide the tone    │
-           └─────────┬──────────┘
-                     │
-                Tone decision
-                     │
-                     ▼
-            ┌──────────────────┐
-            │  MESSAGE AGENT   │
-            │ Write message    │
-            └─────────┬────────┘
-                      │
-                Final message
-                      │
-                      ▼
-              ┌───────────────┐
-              │  SUPER AGENT  │
-              └───────┬───────┘
-                      │
-                      ▼
-                     USER
-```
+* Original debt information
+* Context Agent's assessment
+* Escalation Agent's decision
+
+### Generates
+
+A personalized, Instagram-style message that:
+
+* Uses the actual debt details
+* References the relevant context
+* Matches the selected escalation level
+* Sounds natural and conversational
+* Does not invent information
+
+The Message Agent **does not decide the tone**. It follows the decision made by the Escalation Agent.
 
 ---
 
-# 6. Agent Responsibilities
+## Sequential Delegation
 
-| Agent            | Main Responsibility      | Output             |
-| ---------------- | ------------------------ | ------------------ |
-| Super Agent      | Coordinate and delegate  | Final result       |
-| Context Agent    | Understand the situation | Context assessment |
-| Escalation Agent | Decide appropriate tone  | Tone + reasoning   |
-| Message Agent    | Generate the reminder    | Final message      |
+| Step | Agent                | Job                      | Output                       |
+| ---- | -------------------- | ------------------------ | ---------------------------- |
+| 1    | **Super Agent**      | Delegate the task        | Sends input to Context Agent |
+| 2    | **Context Agent**    | Understand the situation | Context assessment           |
+| 3    | **Escalation Agent** | Decide the tone          | Recommended escalation       |
+| 4    | **Message Agent**    | Write the message        | Final message                |
+| 5    | **Super Agent**      | Return the result        | Message shown to user        |
 
----
+### The core logic
 
-# 7. Important Design Principle
+**Understand → Decide → Generate**
 
-Each agent should have **one clear responsibility**.
-
-```text
-Context Agent
-= Understand
-
-Escalation Agent
-= Decide
-
-Message Agent
-= Generate
-
-Super Agent
-= Delegate + Coordinate
-```
-
-The purpose of this architecture is to demonstrate that the AI is not simply performing:
-
-```text
-Input → LLM → Message
-```
-
-Instead, it performs:
-
-```text
-Input
-  ↓
-Interpret context
-  ↓
-Make a decision
-  ↓
-Generate based on that decision
-  ↓
-Return result
-```
-
-This makes the sequential agent delegation visible and demonstrates meaningful AI involvement.
+The Super Agent connects these steps into one workflow.
 
 ---
 
-# 8. User Override
+## User Override
 
-If the user manually changes the tone, the Super Agent should **not need to rerun the Context Agent or Escalation Agent**.
+If the user changes the AI's recommended tone, the workflow does not need to start again.
 
-Instead:
+**User-selected tone → Message Agent → New message**
 
-```text
-User selects new tone
-        ↓
-Super Agent
-        ↓
-Message Agent
-        ↓
-New message
-```
-
-The user's selected tone becomes the instruction for the Message Agent.
+The user's selected tone replaces the AI's recommendation.
 
 ---
 
-# 9. Regeneration
+## Regeneration
 
-If the user clicks **Regenerate**, the same tone should be maintained.
+When the user clicks **Regenerate**, the Message Agent receives:
 
-The Super Agent sends the Message Agent:
+* Original debt information
+* Current tone
+* Previous generated message
 
-```text
-Original debt information
-+
-Current tone
-+
-Previous generated message
-```
-
-The Message Agent generates a substantially different variation.
-
-```text
-Previous message
-      +
-Same tone
-      ↓
-Message Agent
-      ↓
-New variation
-```
+It generates a new variation while keeping the same escalation level.
 
 ---
 
-# 10. MVP Agent Architecture
+## Agent Responsibilities
 
-The MVP only requires:
+| Agent                | Responsibility        |
+| -------------------- | --------------------- |
+| **Super Agent**      | Delegate + coordinate |
+| **Context Agent**    | Understand            |
+| **Escalation Agent** | Decide                |
+| **Message Agent**    | Generate              |
+
+The important distinction is that **each agent has one job**.
+
+Instead of:
+
+**Input → LLM → Message**
+
+the system becomes:
+
+**Input → Understand context → Decide tone → Generate message**
+
+This makes the AI's decision-making and sequential delegation visible in the project.
+
+---
+
+## MVP Scope
+
+The MVP requires only:
 
 * 1 Super Agent
 * 1 Context Agent
 * 1 Escalation Agent
 * 1 Message Agent
 
-No multi-a
+No parallel agents, persistent memory, database, Splitwise integration, or automatic Instagram sending are required.
