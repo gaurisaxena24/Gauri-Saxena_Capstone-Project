@@ -1,5 +1,5 @@
 import type { DebtDraftFields } from "./debtDraftStore.js";
-import type { SaveDebtInput } from "./database/database.js";
+import type { SaveDebtInput } from "../database/database.js";
 
 export type DebtDraftValidationResult =
   | { valid: true; data: SaveDebtInput }

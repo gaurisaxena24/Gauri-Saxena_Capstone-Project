@@ -1,4 +1,4 @@
-import type { InlineKeyboardMarkup } from "./telegram/rawApi.js";
+import type { InlineKeyboardMarkup } from "../telegram/rawApi.js";
 import type { DebtDraftFields } from "./debtDraftStore.js";
 
 export function formatDebtPreview(fields: DebtDraftFields): string {

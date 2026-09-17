@@ -26,7 +26,7 @@ import {
   handleDebtDraftEditReply,
 } from "../agent/debtDraftAgent.js";
 import { debugListSessions } from "../skills/debtFormStore.js";
-import { debugListDebtDrafts } from "../debtDraftStore.js";
+import { debugListDebtDrafts } from "../debtDraft/debtDraftStore.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

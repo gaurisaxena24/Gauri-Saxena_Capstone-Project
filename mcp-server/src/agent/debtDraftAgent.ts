@@ -25,15 +25,15 @@ import {
   updateDebtDraftFields,
   findAwaitingEditDraftByChat,
   type DebtDraftFields,
-} from "../debtDraftStore.js";
+} from "../debtDraft/debtDraftStore.js";
 import {
   formatDebtPreview,
   buildDebtPreviewKeyboard,
   formatEditableDraftText,
   formatSavedSuffix,
   parseEditedDraftText,
-} from "../debtDraftFormat.js";
-import { validateDebtDraft } from "../debtDraftValidation.js";
+} from "../debtDraft/debtDraftFormat.js";
+import { validateDebtDraft } from "../debtDraft/debtDraftValidation.js";
 import { saveDebt } from "../database/database.js";
 
 function debtContextToDraftFields(ctx: DebtContextJSON): DebtDraftFields {
