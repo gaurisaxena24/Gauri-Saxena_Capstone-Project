@@ -226,3 +226,35 @@ Not available.
 
 **Notes / issues:**
 The `mcp-server/src` → `mcp-server/Source (agent and database)` rename (not made by me) means this whole source tree is currently untracked by git under its new path (git still shows the old `src/*` files as deleted). Not fixed here since it wasn't part of this request, but worth resolving before the next commit.
+
+---
+
+*Day summary — Assessment 2: Skill, agent loop, MCP and SQLite persistence*
+
+Date: 17 September 2026
+Time spent: ~7.5 hours elapsed (first work ~09:55, last commit 17:23), covering both the Claude Code sessions and my own edits/commits in between
+Rough tokens used:  If you're asking for the token count, the important numbers are:
+
+Sonnet 5: 11.3k input + 182.2k output
+Opus 5: 8 input + 4.5k output
+Haiku 4.5: 2.2k input + 17 output
+Cache read: 55.8m (Sonnet) + 715.2k (Opus)
+Cache write: 357.5k (Sonnet) + 586k (Opus)
+Total API cost: $19.68
+
+So the biggest actual generation usage was Sonnet 5 with ~182,200 output tokens.
+
+What shipped:
+Verified and hardened the `unhinged-debt-collector` Skill so the debt form triggers on `hi`/`hello`/`hey`/`start`, and restricted it to my own Telegram chat via `TELEGRAM_REVIEWER_CHAT_ID`
+Debugged the "bot not responding" problem and proved via direct Telegram Bot API calls that no updates were reaching the bot — the cause was client-side, not a code defect
+Refactored the Skill into a pure, Telegram-agnostic state machine that returns structured JSON (`status`, `next_field`, `next_question`, `debt_context`) and is invoked repeatedly by a separate Agent inside a real multi-step loop
+Added per-invocation logging as evidence the Agent calls the Skill once per incoming message, ending at `status=complete`
+Got the bot running as a detached background process so it keeps answering after the editor session closes
+Built the full Temporary Draft → Clean Preview → Human Approval → SQLite pipeline: preview with Save / Make Changes buttons, in-place field editing without redoing the form, shared validation, and an idempotent Save that writes exactly one row to `data/debts.db`
+Added a `tone` question to the form and `data/*.db` to `.gitignore`
+Added a temporary `/debug` command that dumps the in-memory session and draft state
+Reorganised the source tree: debt-draft modules into their own folder, then each agent and each skill module into its own dedicated subfolder
+Renamed the working branch to `assesment_2_gauri` (local and remote) and deleted the old remote branch
+Fixed the VS Code TypeScript errors originating from `node_modules/fast-uri/tsconfig.json` via explicit `exclude` plus `.vscode/settings.json` and `.vscode/tasks.json`
+
+Verification: `npx tsc --noEmit` and a clean `npm run build` pass; offline test suites (multi-step loop, and 26 assertions covering preview/Save/edit/validation against a real SQLite file) pass; the full flow was exercised live over the real Telegram bot.
