@@ -1,7 +1,13 @@
-| **Name**                  | **What it does**            | **Why**                                   | **Work**                                                        | **Skill used**                | **Where**              | **Interacts with**     |
-| ------------------------- | --------------------------- | ----------------------------------------- | --------------------------------------------------------------- | ----------------------------- | ---------------------- | ---------------------- |
-| **Main Agent**            | Runs the whole process      | Controls the workflow                     | Collects info → creates message → gets approval → sends message | **Debt Collection Skill**     | `agent/`               | Skill, Draft, Telegram |
-| **Debt Collection Skill** | Collects debt details       | Gets all information needed               | Asks questions and checks missing information                   | —                             | `skills/`              | Main Agent, Debt Store |
-| **Debt Store**            | Saves debt details          | Keeps user information during the process | Stores name, amount, reason, overdue time, etc.                 | Used by Debt Collection Skill | `database/`            | Debt Collection Skill  |
-| **Debt Draft**            | Saves the generated message | Keeps the current message for review      | Stores message, tone, and draft                                 | Used by Main Agent            | `debtDraft/`           | Main Agent, Telegram   |
-| **Telegram Tool**         | Sends the message           | Connects the system to Telegram           | Sends the approved message                                      | Used by Main Agent            | `telegram/` / `tools/` | Main Agent, Telegram   |
+# Agents
+
+| Agent              | What it does                                      | Why                                                           | Takes information from | Interacts with                                         |
+| ------------------ | ------------------------------------------------- | ------------------------------------------------------------- | ---------------------- | ------------------------------------------------------ |
+| **Main Agent**     | Talks to the agents and manages the overall process | Controls which agent works next                               | User                   | Debt Agent, Store Agent, Message Agent, Telegram Agent |
+| **Debt Agent**     | Collects the debt information from the user       | Gets all the information needed for the debt reminder         | User                   | Main Agent, Store Agent                                |
+| **Store Agent**    | Stores and retrieves the debt information         | Keeps the user's debt information available for the next step | Debt Agent             | Debt Agent, Message Agent                              |
+| **Message Agent**  | Creates the actual debt reminder message          | Uses the stored information to write a personalized message   | Store Agent            | Main Agent                                             |
+| **Telegram Agent** | Sends the approved message to the person          | Delivers the final message through Telegram                   | Main Agent             | Telegram                                               |
+
+## Flow
+
+**User → Main Agent → Debt Agent → Store Agent → Message Agent → Main Agent → Telegram Agent → Person**
