@@ -49,3 +49,8 @@ export function getSession(chatId: string | number): DebtFormSession | undefined
 export function clearSession(chatId: string | number): void {
   sessions.delete(key(chatId));
 }
+
+/** TEMPORARY DEBUG HELPER — remove once the multi-step loop is fully verified. */
+export function debugListSessions(): DebtFormSession[] {
+  return Array.from(sessions.values());
+}

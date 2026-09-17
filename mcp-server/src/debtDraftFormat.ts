@@ -23,8 +23,8 @@ export function buildDebtPreviewKeyboard(draftId: string): InlineKeyboardMarkup 
   return {
     inline_keyboard: [
       [
-        { text: "💾 Save", callback_data: `save_debt:${draftId}` },
-        { text: "✏️ Make Changes", callback_data: `edit_debt:${draftId}` },
+        { text: "Save", callback_data: `save_debt:${draftId}` },
+        { text: "Make Changes", callback_data: `edit_debt:${draftId}` },
       ],
     ],
   };
@@ -46,7 +46,7 @@ export function formatEditableDraftText(fields: DebtDraftFields): string {
 }
 
 export function formatSavedSuffix(id: number): string {
-  return `\n\n✅ Debt saved successfully. (id #${id})`;
+  return `\n\n Debt saved successfully. (id #${id})`;
 }
 
 const LABEL_TO_FIELD: Record<string, keyof DebtDraftFields> = {

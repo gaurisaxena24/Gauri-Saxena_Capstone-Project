@@ -25,6 +25,8 @@ import {
   handleDebtDraftCallback,
   handleDebtDraftEditReply,
 } from "../agent/debtDraftAgent.js";
+import { debugListSessions } from "../skills/debtFormStore.js";
+import { debugListDebtDrafts } from "../debtDraftStore.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -112,8 +114,25 @@ async function handleCallbackQuery(cb: TelegramCallbackQuery): Promise<void> {
   }
 }
 
+/** TEMPORARY DEBUG HELPER — remove once the multi-step loop is fully verified. */
+async function handleDebugCommand(message: TelegramMessage): Promise<boolean> {
+  if (message.text?.trim() !== "/debug") return false;
+
+  const sessions = debugListSessions();
+  const drafts = debugListDebtDrafts();
+  const report =
+    `[DEBUG] active debtFormStore sessions (${sessions.length}):\n${JSON.stringify(sessions, null, 2)}\n\n` +
+    `[DEBUG] active debtDraftStore drafts (${drafts.length}):\n${JSON.stringify(drafts, null, 2)}`;
+
+  console.log(report);
+  await tgSendMessage(message.chat.id, report);
+  return true;
+}
+
 export async function handleUpdate(update: TelegramUpdate): Promise<void> {
   if (update.message) {
+    if (await handleDebugCommand(update.message)) return;
+
     const consumedByDebtCollector = await runDebtCollectorAgentStep(update.message);
     if (consumedByDebtCollector) return;
 

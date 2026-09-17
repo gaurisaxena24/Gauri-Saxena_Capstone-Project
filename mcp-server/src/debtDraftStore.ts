@@ -78,3 +78,8 @@ export function findAwaitingEditDraftByChat(
   }
   return undefined;
 }
+
+/** TEMPORARY DEBUG HELPER — remove once the multi-step loop is fully verified. */
+export function debugListDebtDrafts(): DebtDraftRecord[] {
+  return Array.from(drafts.values());
+}
