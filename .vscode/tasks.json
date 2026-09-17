@@ -3,13 +3,13 @@
   "tasks": [
     {
       "type": "typescript",
-      "tsconfig": "mcp-server/tsconfig.json",
+      "tsconfig": "tsconfig.json",
       "problemMatcher": ["$tsc"],
       "group": {
         "kind": "build",
         "isDefault": true
       },
-      "label": "tsc: build - mcp-server/tsconfig.json"
+      "label": "tsc: build - tsconfig.json"
     }
   ]
 }

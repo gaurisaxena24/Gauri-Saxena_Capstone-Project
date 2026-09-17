@@ -2,11 +2,12 @@ import { config } from "dotenv";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
-// .env lives at the project root, one level above mcp-server/. Resolve it
-// relative to this file (not process.cwd()) so the token loads correctly
-// no matter what working directory the MCP host launches this server from.
+// .env lives at the project root. Resolve it relative to this file's
+// compiled location (compiled/debt-collector-telegram-system/backend/), not
+// process.cwd(), so the token loads correctly no matter what working
+// directory the MCP host launches this server from.
 const __dirname = dirname(fileURLToPath(import.meta.url));
-config({ path: resolve(__dirname, "../../.env") });
+config({ path: resolve(__dirname, "../../../.env") });
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";

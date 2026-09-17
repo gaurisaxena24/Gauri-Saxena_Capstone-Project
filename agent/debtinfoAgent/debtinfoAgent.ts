@@ -8,11 +8,11 @@
  * ("collecting" — invoke the Skill again on the next message) or sends the
  * completion summary and stops ("complete"). The Skill itself never talks
  * to Telegram; this Agent is the only place that does, via the existing
- * tgSendMessage() wrapper in ../telegram/rawApi.ts.
+ * tgSendMessage() wrapper in ../../backend/telegram/rawApi.ts.
  */
 
-import { tgSendMessage, type TelegramMessage } from "../../telegram/rawApi.js";
-import { invokeDebtCollectorSkill } from "../../skills/debtCollectorSkill/debtCollectorSkill.js";
+import { tgSendMessage, type TelegramMessage } from "../../backend/telegram/rawApi.js";
+import { invokeDebtCollectorSkill } from "../../skills/debtCollector/debtCollectorSkill/debtCollectorSkill.js";
 import { startDebtDraftReview } from "../debtDraftAgent/debtDraftAgent.js";
 
 const FORM_TEXT = `💸 UNHINGED DEBT COLLECTOR

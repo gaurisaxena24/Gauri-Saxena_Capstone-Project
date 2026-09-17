@@ -258,3 +258,46 @@ Renamed the working branch to `assesment_2_gauri` (local and remote) and deleted
 Fixed the VS Code TypeScript errors originating from `node_modules/fast-uri/tsconfig.json` via explicit `exclude` plus `.vscode/settings.json` and `.vscode/tasks.json`
 
 Verification: `npx tsc --noEmit` and a clean `npm run build` pass; offline test suites (multi-step loop, and 26 assertions covering preview/Save/edit/validation against a real SQLite file) pass; the full flow was exercised live over the real Telegram bot.
+
+## 2026-09-17
+### Task: Full project reorganization into agent/, skills/debtCollector/, backend/, frontend/, data/, compiled/
+
+**What I asked Claude Code to do:**
+Reorganize the whole project into a specific clean structure — `agent/`, `skills/debtCollector/`, `frontend/`, `backend/{database,debtDraft,telegram,tools,review}/`, `data/`, `compiled/debt-collector-telegram-system/`, with `README.md`/`plan.md`/`BUILD_LOG.md`/`.env`/`.gitignore`/`package.json`/`package-lock.json`/`tsconfig.json` at the true project root — without changing functionality, deleting files, or creating duplicates, updating every broken import and config path, and verifying the project still runs.
+
+**What Claude Code did:**
+- Found the project had already been restructured outside this session (by hand) since the last entry: the old `mcp-server/` wrapper was renamed to `debt-collector-telegram-system/` (containing its own `src/`, `compiled-debtcollector-telegram-system/`, `package.json`, `tsconfig.json`, `node_modules`).
+- Moved every source `.ts` file (via `git mv`, since they were tracked) out of that wrapper into the requested top-level layout: `agent/debtDraftAgent/`, `agent/debtinfoAgent/`, `skills/debtCollector/debtCollectorSkill/`, `skills/debtCollector/debtFormStore/`, `backend/index.ts`, `backend/database/`, `backend/debtDraft/` (including `draftStore.ts`/`draftText.ts`, exactly as instructed), `backend/telegram/`, `backend/tools/`, `backend/review/reviewMessage.ts`.
+- Moved `package.json`, `package-lock.json`, `tsconfig.json` (tracked, via `git mv`) and `node_modules` (untracked, plain `mv`) up to the true project root.
+- Moved two documentation files that had been sitting inside the *compiled* output by mistake (`Agent_info.md`, `skill.md`) to sit next to the source they document (`agent/`, `skills/debtCollector/`), and moved the root-level `Agents_DebtCollector` architecture notes file into `agent/` as well.
+- Preserved the old build output (rather than deleting it) by moving it wholesale into `compiled/_pre-reorg-build-snapshot/`, then let a fresh `tsc` build populate the correct new-structure output at `compiled/debt-collector-telegram-system/` (which now mirrors `agent/`, `skills/`, `backend/`).
+- Rewrote `tsconfig.json` (`rootDir: "."`, `include` covering all four top-level source folders, `outDir: "compiled/debt-collector-telegram-system"`) and `package.json`'s `main`/`start`/`dev` scripts to match.
+- Fixed every relative import across all 17 moved files (recomputed by hand for the new nesting depth), plus the two `__dirname`-based runtime path resolutions (`.env` loading in `backend/index.ts`, the SQLite `data/` directory in `backend/database/database.ts`) which needed extra `../` levels because the compiled output is now nested one level deeper (`compiled/debt-collector-telegram-system/backend/...` instead of the old `mcp-server/dist/...`).
+- Updated `.vscode/tasks.json` (stale `mcp-server/tsconfig.json` reference) and `.gitignore` (`dist/` → `compiled/`, since the build output folder was renamed).
+- Confirmed `README.md`/`plan.md` had no stale path references; left `BUILD_LOG.md`'s own historical entries untouched since they're an accurate record of the structure *at the time*, not something to rewrite.
+- `frontend/` was left empty — there are no frontend/UI files in this project to move into it.
+
+**Files created/modified:**
+- All 17 source `.ts` files, moved and import paths fixed (agent/, skills/debtCollector/, backend/ subfolders — see git rename list)
+- Agent_info.md, skill.md, Agents_DebtCollector (moved to sit next to their respective source)
+- package.json, package-lock.json, tsconfig.json, node_modules (moved to project root)
+- .vscode/tasks.json (fixed tsconfig path)
+- .gitignore (dist/ → compiled/)
+- BUILD_LOG.md
+
+**Result:**
+Project now matches the requested structure exactly (`agent/`, `skills/debtCollector/`, `backend/{database,debtDraft,telegram,tools,review}/`, `data/`, `compiled/debt-collector-telegram-system/`, docs + config at root). No functionality changed, no files deleted — the pre-reorg build output was preserved under `compiled/_pre-reorg-build-snapshot/` rather than removed. `git status` shows every move as a clean rename (`R`/`RM`), preserving file history.
+
+**Testing / verification:**
+- `npx tsc --noEmit` — clean.
+- `npm run build` — clean; compiled output correctly lands at `compiled/debt-collector-telegram-system/` mirroring the new `agent/`/`skills/`/`backend/` structure.
+- Started the bot from the new location (`npm start`) — clean startup, no errors, confirming `.env` still loads correctly from its new relative path depth.
+- Ran a scripted offline smoke test against the newly compiled modules driving a full `hi` → form → preview loop across the `agent/` ↔ `backend/` ↔ `skills/` boundary — passed (person name, amount, and full preview all correct).
+- Asked the user to send a live Telegram message to confirm end-to-end; awaiting confirmation.
+
+**Claude Code token usage:**
+Not available.
+
+**Notes / issues:**
+- `frontend/` exists conceptually in the request but has nothing to contain yet, since this project has no UI code — left uncreated rather than adding an empty placeholder.
+- The pre-existing build output under `compiled-debtcollector-telegram-system/` was already git-tracked (unusual for generated output); it was preserved as a renamed snapshot rather than deleted, per instructions, but going forward `compiled/` is gitignored so new builds won't be tracked.

@@ -1,4 +1,4 @@
-import type { InlineKeyboardMarkup } from "./telegram/rawApi.js";
+import type { InlineKeyboardMarkup } from "../telegram/rawApi.js";
 
 export function buildApprovalKeyboard(draftId: string): InlineKeyboardMarkup {
   return {

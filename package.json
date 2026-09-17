@@ -3,11 +3,11 @@
   "version": "0.1.0",
   "description": "MCP server for Unhinged Debt Collector (Telegram tool)",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "compiled/debt-collector-telegram-system/backend/index.js",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "tsx src/index.ts"
+    "start": "node compiled/debt-collector-telegram-system/backend/index.js",
+    "dev": "tsx backend/index.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

@@ -6,7 +6,7 @@ test-file.md
 
 # Node
 node_modules/
-dist/
+compiled/
 *.log
 
 # SQLite database

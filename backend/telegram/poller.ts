@@ -13,19 +13,19 @@ import {
   setLiveMessage,
   resolveDraft,
   findPendingDraftByLiveMessage,
-} from "../draftStore.js";
+} from "../debtDraft/draftStore.js";
 import {
   buildApprovalKeyboard,
   formatReviewMessage,
   formatResolvedSuffix,
-} from "../reviewMessage.js";
+} from "../review/reviewMessage.js";
 import { sendTelegramMessage } from "../tools/sendTelegramMessage.js";
-import { runDebtCollectorAgentStep } from "../agent/debtinfoAgent/debtinfoAgent.js";
+import { runDebtCollectorAgentStep } from "../../agent/debtinfoAgent/debtinfoAgent.js";
 import {
   handleDebtDraftCallback,
   handleDebtDraftEditReply,
-} from "../agent/debtDraftAgent/debtDraftAgent.js";
-import { debugListSessions } from "../skills/debtFormStore/debtFormStore.js";
+} from "../../agent/debtDraftAgent/debtDraftAgent.js";
+import { debugListSessions } from "../../skills/debtCollector/debtFormStore/debtFormStore.js";
 import { debugListDebtDrafts } from "../debtDraft/debtDraftStore.js";
 
 function sleep(ms: number): Promise<void> {

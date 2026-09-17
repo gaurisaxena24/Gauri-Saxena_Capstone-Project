@@ -3,14 +3,14 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "outDir": "compiled-debtcollector-telegram-system",
-    "rootDir": "src",
+    "outDir": "compiled/debt-collector-telegram-system",
+    "rootDir": ".",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "compiled-debtcollector-telegram-system"]
+  "include": ["agent/**/*", "skills/**/*", "backend/**/*", "frontend/**/*"],
+  "exclude": ["node_modules", "compiled", "data"]
 }

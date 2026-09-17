@@ -13,8 +13,9 @@ import { dirname, resolve } from "node:path";
 import { mkdirSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-// data/ lives at the project root, alongside mcp-server/ (not inside it).
-const DATA_DIR = resolve(__dirname, "../../../data");
+// data/ lives at the project root, resolved from this file's compiled
+// location at compiled/debt-collector-telegram-system/backend/database/.
+const DATA_DIR = resolve(__dirname, "../../../../data");
 const DB_PATH = resolve(DATA_DIR, "debts.db");
 
 let db: DatabaseSync | undefined;

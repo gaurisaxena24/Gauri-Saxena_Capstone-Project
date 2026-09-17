@@ -6,7 +6,7 @@
  * user edit fields in place without redoing the whole form, and only ever
  * inserting a database row once, on an explicit Save. All Telegram I/O
  * goes through the existing tgSendMessage/tgEditMessageText wrappers in
- * ../telegram/rawApi.ts; database access goes through ../database/database.ts.
+ * ../../backend/telegram/rawApi.ts; database access goes through ../../backend/database/database.ts.
  */
 
 import {
@@ -15,8 +15,8 @@ import {
   tgAnswerCallbackQuery,
   type TelegramMessage,
   type TelegramCallbackQuery,
-} from "../../telegram/rawApi.js";
-import type { DebtContextJSON } from "../../skills/debtCollectorSkill/debtCollectorSkill.js";
+} from "../../backend/telegram/rawApi.js";
+import type { DebtContextJSON } from "../../skills/debtCollector/debtCollectorSkill/debtCollectorSkill.js";
 import {
   createDebtDraft,
   getDebtDraft,
@@ -25,16 +25,16 @@ import {
   updateDebtDraftFields,
   findAwaitingEditDraftByChat,
   type DebtDraftFields,
-} from "../../debtDraft/debtDraftStore.js";
+} from "../../backend/debtDraft/debtDraftStore.js";
 import {
   formatDebtPreview,
   buildDebtPreviewKeyboard,
   formatEditableDraftText,
   formatSavedSuffix,
   parseEditedDraftText,
-} from "../../debtDraft/debtDraftFormat.js";
-import { validateDebtDraft } from "../../debtDraft/debtDraftValidation.js";
-import { saveDebt } from "../../database/database.js";
+} from "../../backend/debtDraft/debtDraftFormat.js";
+import { validateDebtDraft } from "../../backend/debtDraft/debtDraftValidation.js";
+import { saveDebt } from "../../backend/database/database.js";
 
 function debtContextToDraftFields(ctx: DebtContextJSON): DebtDraftFields {
   return {

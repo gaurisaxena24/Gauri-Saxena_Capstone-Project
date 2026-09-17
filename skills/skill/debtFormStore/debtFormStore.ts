@@ -1,7 +1,7 @@
 /**
  * In-memory session state for the Unhinged Debt Collector Skill's
  * step-by-step form. One session per Telegram chat, mirroring the
- * in-memory Map pattern used by ../../draftStore.ts.
+ * in-memory Map pattern used by ../../../backend/debtDraft/draftStore.ts.
  */
 
 export interface DebtFormFields {

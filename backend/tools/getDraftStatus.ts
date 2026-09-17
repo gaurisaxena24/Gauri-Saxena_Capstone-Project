@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getDraft } from "../draftStore.js";
+import { getDraft } from "../debtDraft/draftStore.js";
 
 export const getDraftStatusInputSchema = z.object({
   draft_id: z.string().min(1).describe("The draftId returned by create_debt_reminder_draft"),

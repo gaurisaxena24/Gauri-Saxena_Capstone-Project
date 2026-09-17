@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { generateDraftText } from "../draftText.js";
-import { createDraft, setLiveMessage } from "../draftStore.js";
+import { generateDraftText } from "../debtDraft/draftText.js";
+import { createDraft, setLiveMessage } from "../debtDraft/draftStore.js";
 import { tgSendMessage } from "../telegram/rawApi.js";
-import { buildApprovalKeyboard, formatReviewMessage } from "../reviewMessage.js";
+import { buildApprovalKeyboard, formatReviewMessage } from "../review/reviewMessage.js";
 
 export const createDebtReminderDraftInputSchema = z.object({
   person_name: z.string().min(1).describe("Name of the person who owes money"),

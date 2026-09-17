@@ -4,7 +4,7 @@
  * Pure, state-aware debt-information collector. It has no knowledge of
  * Telegram or any other transport — it only reads/writes session state via
  * ../debtFormStore/debtFormStore.ts and returns a structured result describing what's
- * still missing. An agent (see ../../agent/debtinfoAgent/debtinfoAgent.ts) is
+ * still missing. An agent (see ../../../agent/debtinfoAgent/debtinfoAgent.ts) is
  * responsible for invoking this Skill repeatedly, one incoming user message
  * at a time, and for actually sending `next_question` / the completion
  * summary over Telegram.
