@@ -20,6 +20,7 @@ import {
   formatResolvedSuffix,
 } from "../reviewMessage.js";
 import { sendTelegramMessage } from "../tools/sendTelegramMessage.js";
+import { runDebtCollectorAgentStep } from "../agent/debtinfoAgent.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -109,7 +110,10 @@ async function handleCallbackQuery(cb: TelegramCallbackQuery): Promise<void> {
 
 export async function handleUpdate(update: TelegramUpdate): Promise<void> {
   if (update.message) {
-    await handleReplyEdit(update.message);
+    const consumedByDebtCollector = await runDebtCollectorAgentStep(update.message);
+    if (!consumedByDebtCollector) {
+      await handleReplyEdit(update.message);
+    }
   } else if (update.callback_query) {
     await handleCallbackQuery(update.callback_query);
   }
