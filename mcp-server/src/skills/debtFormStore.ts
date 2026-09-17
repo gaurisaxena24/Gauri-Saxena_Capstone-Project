@@ -14,6 +14,7 @@ export interface DebtFormFields {
   previously_reminded?: boolean;
   previous_reminder_count?: number;
   additional_context?: string;
+  tone?: string;
 }
 
 export interface DebtFormSession {

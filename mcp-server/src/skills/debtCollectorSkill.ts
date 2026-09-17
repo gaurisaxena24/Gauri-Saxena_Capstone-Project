@@ -30,6 +30,7 @@ export interface DebtContextJSON {
   previously_reminded: boolean | null;
   previous_reminder_count: number | null;
   additional_context: string | null;
+  tone: string | null;
 }
 
 export type DebtCollectorFieldKey = keyof DebtFormFields;
@@ -64,8 +65,12 @@ const QUESTIONS: Question[] = [
   { field: "overdue_duration", prompt: () => "How long has it been overdue?" },
   { field: "relationship", prompt: (f) => `What's your relationship with ${f.person_name}?` },
   { field: "previously_reminded", prompt: (f) => `Have you reminded ${f.person_name} before? Yes/No` },
-  { field: "additional_context", prompt: () => "Any additional context?" },
+  { field: "additional_context", prompt: () => "Any additional context? (optional — reply 'skip' to leave blank)" },
+  { field: "tone", prompt: () => "Any preferred tone for the reminder? (optional — reply 'skip' to leave blank)" },
 ];
+
+/** Optional fields where the user may reply "skip" to leave them blank instead of typing something. */
+const SKIPPABLE_FIELDS = new Set<SimpleFieldKey>(["additional_context", "tone"]);
 
 const REMINDER_COUNT_PROMPT = "How many times have you reminded them?";
 
@@ -98,6 +103,7 @@ function toDebtContext(fields: DebtFormFields): DebtContextJSON {
     previously_reminded: fields.previously_reminded ?? null,
     previous_reminder_count: fields.previous_reminder_count ?? null,
     additional_context: fields.additional_context ?? null,
+    tone: fields.tone ?? null,
   };
 }
 
@@ -187,7 +193,10 @@ export function invokeDebtCollectorSkill(
     return buildResult(session);
   }
 
-  session.fields[question.field] = text;
+  const isSkip = SKIPPABLE_FIELDS.has(question.field) && text.toLowerCase() === "skip";
+  if (!isSkip) {
+    session.fields[question.field] = text;
+  }
   session.step += 1;
   return buildResult(session);
 }

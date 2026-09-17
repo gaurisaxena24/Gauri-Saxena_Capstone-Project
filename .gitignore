@@ -8,3 +8,6 @@ test-file.md
 node_modules/
 dist/
 *.log
+
+# SQLite database
+data/*.db

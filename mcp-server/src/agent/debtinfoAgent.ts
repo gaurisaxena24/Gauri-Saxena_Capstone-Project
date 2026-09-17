@@ -12,10 +12,8 @@
  */
 
 import { tgSendMessage, type TelegramMessage } from "../telegram/rawApi.js";
-import {
-  invokeDebtCollectorSkill,
-  type DebtContextJSON,
-} from "../skills/debtCollectorSkill.js";
+import { invokeDebtCollectorSkill } from "../skills/debtCollectorSkill.js";
+import { startDebtDraftReview } from "./debtDraftAgent.js";
 
 const FORM_TEXT = `💸 UNHINGED DEBT COLLECTOR
 
@@ -49,22 +47,6 @@ function isOwnerChat(chatId: string | number): boolean {
   return String(chatId) === String(ownerChatId);
 }
 
-function summarizeDebtContext(ctx: DebtContextJSON): string {
-  const reminderLine = ctx.previously_reminded ? `Yes (${ctx.previous_reminder_count}x)` : "No";
-
-  return (
-    `Got it — here's what I've saved:\n\n` +
-    `Person: ${ctx.person_name}\n` +
-    `Telegram: ${ctx.telegram_username}\n` +
-    `Amount owed: ${ctx.amount_owed}\n` +
-    `Debt for: ${ctx.debt_reason}\n` +
-    `Overdue: ${ctx.overdue_duration}\n` +
-    `Relationship: ${ctx.relationship}\n` +
-    `Previously reminded: ${reminderLine}\n` +
-    `Additional context: ${ctx.additional_context || "-"}`
-  );
-}
-
 /** Total Skill invocations across all chats, for this process's lifetime — evidence the loop is real. */
 let skillInvocationCount = 0;
 
@@ -95,7 +77,7 @@ export async function runDebtCollectorAgentStep(message: TelegramMessage): Promi
 
   if (result.status === "complete") {
     console.log(`[DebtCollectorAgent] final debt_context (chat ${chatId}):`, JSON.stringify(result.debt_context, null, 2));
-    await tgSendMessage(chatId, summarizeDebtContext(result.debt_context));
+    await startDebtDraftReview(chatId, result.debt_context);
     return true;
   }
 
