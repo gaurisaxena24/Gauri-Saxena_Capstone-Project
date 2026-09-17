@@ -150,3 +150,7 @@ Reorganization complete; no behavior change.
 
 **Notes / issues:**
 None.
+
+2026-09-17
+### Task: Fix
+Fixing VS Code TypeScript errors from a dependency's stray tsconfig in your Debt Collector project; applied config fixes and rebuilt cleanly. Bot's running again waiting on your test message to confirm Telegram still works.
