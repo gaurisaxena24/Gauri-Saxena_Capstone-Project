@@ -94,6 +94,7 @@ export async function runDebtCollectorAgentStep(message: TelegramMessage): Promi
   }
 
   if (result.status === "complete") {
+    console.log(`[DebtCollectorAgent] final debt_context (chat ${chatId}):`, JSON.stringify(result.debt_context, null, 2));
     await tgSendMessage(chatId, summarizeDebtContext(result.debt_context));
     return true;
   }
