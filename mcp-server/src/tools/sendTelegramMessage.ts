@@ -19,6 +19,7 @@ export type SendTelegramMessageInput = z.infer<
 export interface SendTelegramMessageResult {
   success: boolean;
   message: string;
+  messageId?: number;
 }
 
 /**
@@ -65,6 +66,7 @@ export async function sendTelegramMessage(
     const data = (await response.json()) as {
       ok: boolean;
       description?: string;
+      result?: { message_id: number };
     };
 
     if (!response.ok || !data.ok) {
@@ -77,7 +79,11 @@ export async function sendTelegramMessage(
       };
     }
 
-    return { success: true, message: "Message sent successfully." };
+    return {
+      success: true,
+      message: "Message sent successfully.",
+      messageId: data.result?.message_id,
+    };
   } catch (error) {
     const errorText = error instanceof Error ? error.message : String(error);
     return {
