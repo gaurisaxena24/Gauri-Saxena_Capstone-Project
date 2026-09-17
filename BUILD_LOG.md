@@ -154,3 +154,40 @@ None.
 2026-09-17
 ### Task: Fix
 Fixing VS Code TypeScript errors from a dependency's stray tsconfig in your Debt Collector project; applied config fixes and rebuilt cleanly. Bot's running again waiting on your test message to confirm Telegram still works.
+
+## 2026-09-17
+### Task: Fix VS Code TypeScript errors coming from `node_modules/fast-uri/tsconfig.json`
+
+**What I asked Claude Code to do:**
+Fix TypeScript errors showing in VS Code's Problems panel ("Cannot write file .../node_modules/fast-uri/... because it would overwrite input file"), by fixing the root cause in our own TypeScript configuration rather than patching each error individually, without touching `node_modules`, without removing dependencies, and without changing functionality.
+
+**What Claude Code did:**
+- Confirmed `npx tsc --noEmit` and `npm run build` were already completely clean from the command line — our own `mcp-server/tsconfig.json` already scopes correctly to `src/**/*` and TypeScript excludes `node_modules` by default, so our actual project build never touches `fast-uri`.
+- Identified the real mechanism: `fast-uri` (a transitive dependency pulled in via `ajv`/`ajv-formats`, used by `@modelcontextprotocol/sdk`) ships its own internal `tsconfig.json` with `allowJs`/`checkJs` and no `outDir`, meant only for its own package's dev tooling. VS Code's built-in TypeScript extension auto-detects *every* `tsconfig.json` under the opened workspace folder (via `typescript.tsc.autoDetect`, on by default) — including ones deep inside `node_modules` — and if that config is ever run as a build task, it tries to emit files over its own `.js` sources, producing exactly this "would overwrite input file" (TS5055) error. This shows up in VS Code but not the CLI because it's an editor/task-detection issue, not a problem with our own `tsc` invocation.
+- Made the exclusion explicit in `mcp-server/tsconfig.json` (`"exclude": ["node_modules", "dist"]`) — functionally a no-op (already the default) but makes the intent unambiguous.
+- Added `.vscode/settings.json` at the repo root with `typescript.tsc.autoDetect: "off"` (stops VS Code from discovering/offering build tasks from any `tsconfig.json` under `node_modules`), `typescript.tsserver.experimental.enableProjectDiagnostics: false` (stops the TS server from proactively running project-wide diagnostics against every discovered config), and `files.watcherExclude`/`search.exclude` for `node_modules`.
+- Added `.vscode/tasks.json` defining a single explicit default build task pointing at `mcp-server/tsconfig.json`, so "Run Build Task" always resolves to our own project instead of any ambiguous auto-detected one.
+- Did not modify anything inside `node_modules`, did not remove any dependency, and did not change any application logic.
+
+**Files created/modified:**
+- mcp-server/tsconfig.json (added explicit `exclude`)
+- .vscode/settings.json (new)
+- .vscode/tasks.json (new)
+- BUILD_LOG.md
+
+**Result:**
+Root cause fixed at the configuration level. `npx tsc --noEmit` and a clean `npm run build` both still pass with zero output. The MCP server starts and runs without errors after the change (verified by restarting the detached background process and confirming it stays up with no crash/error output). The user reported the VS Code errors were still visible immediately after the first settings.json change; since these come from either an already-running background task/watcher or a not-yet-reloaded TS server, a VS Code **window reload** ("Developer: Reload Window") or at minimum "TypeScript: Restart TS Server" is needed for a settings/tasks change to take effect — a config file edit alone cannot retroactively stop an already-running background process. This was communicated to the user as the next step to confirm the errors clear.
+
+**Testing / verification:**
+- `npx tsc --noEmit` — clean, exit 0.
+- `npm run build` (after deleting `dist/` for a clean rebuild) — clean, exit 0.
+- Confirmed `mcp-server/node_modules/fast-uri/tsconfig.json` exists and has no `outDir`, matching the exact failure mode described.
+- Confirmed no `tasks.json` or `*.code-workspace` file existed anywhere in the repo prior to this fix (ruling out a pre-existing custom task as the cause).
+- Restarted the detached bot process (`nohup npm start … & disown`) after the fix; it started cleanly with no errors (only the expected experimental `node:sqlite` warning) and stayed running.
+
+**Claude Code token usage:**
+Not available.
+
+**Notes / issues:**
+- This is a known, previously-reported issue with `fast-uri`'s own packaged `tsconfig.json` tripping up editors/tools that scan `node_modules` for build configs; it is not a bug in this project's code.
+- If the errors persist after a window reload, the next step would be to check VS Code's "Terminal → Show Running Tasks" for a lingering `tsc` watcher and terminate it manually, since only a reload/terminate can stop a task that was already started before this fix was applied.
