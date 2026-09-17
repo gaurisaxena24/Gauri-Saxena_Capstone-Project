@@ -15,8 +15,8 @@ import {
   tgAnswerCallbackQuery,
   type TelegramMessage,
   type TelegramCallbackQuery,
-} from "../telegram/rawApi.js";
-import type { DebtContextJSON } from "../skills/debtCollectorSkill.js";
+} from "../../telegram/rawApi.js";
+import type { DebtContextJSON } from "../../skills/debtCollectorSkill/debtCollectorSkill.js";
 import {
   createDebtDraft,
   getDebtDraft,
@@ -25,16 +25,16 @@ import {
   updateDebtDraftFields,
   findAwaitingEditDraftByChat,
   type DebtDraftFields,
-} from "../debtDraft/debtDraftStore.js";
+} from "../../debtDraft/debtDraftStore.js";
 import {
   formatDebtPreview,
   buildDebtPreviewKeyboard,
   formatEditableDraftText,
   formatSavedSuffix,
   parseEditedDraftText,
-} from "../debtDraft/debtDraftFormat.js";
-import { validateDebtDraft } from "../debtDraft/debtDraftValidation.js";
-import { saveDebt } from "../database/database.js";
+} from "../../debtDraft/debtDraftFormat.js";
+import { validateDebtDraft } from "../../debtDraft/debtDraftValidation.js";
+import { saveDebt } from "../../database/database.js";
 
 function debtContextToDraftFields(ctx: DebtContextJSON): DebtDraftFields {
   return {

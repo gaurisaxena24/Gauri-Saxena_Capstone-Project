@@ -11,9 +11,9 @@
  * tgSendMessage() wrapper in ../telegram/rawApi.ts.
  */
 
-import { tgSendMessage, type TelegramMessage } from "../telegram/rawApi.js";
-import { invokeDebtCollectorSkill } from "../skills/debtCollectorSkill.js";
-import { startDebtDraftReview } from "./debtDraftAgent.js";
+import { tgSendMessage, type TelegramMessage } from "../../telegram/rawApi.js";
+import { invokeDebtCollectorSkill } from "../../skills/debtCollectorSkill/debtCollectorSkill.js";
+import { startDebtDraftReview } from "../debtDraftAgent/debtDraftAgent.js";
 
 const FORM_TEXT = `💸 UNHINGED DEBT COLLECTOR
 

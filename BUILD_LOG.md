@@ -191,3 +191,38 @@ Not available.
 **Notes / issues:**
 - This is a known, previously-reported issue with `fast-uri`'s own packaged `tsconfig.json` tripping up editors/tools that scan `node_modules` for build configs; it is not a bug in this project's code.
 - If the errors persist after a window reload, the next step would be to check VS Code's "Terminal → Show Running Tasks" for a lingering `tsc` watcher and terminate it manually, since only a reload/terminate can stop a task that was already started before this fix was applied.
+
+## 2026-09-17
+### Task: Give each agent module and each skill module its own subfolder
+
+**What I asked Claude Code to do:**
+"Make the agent a separate folder for itself" (clarified to mean: split `debtinfoAgent.ts` and `debtDraftAgent.ts`, currently sitting together in `agent/`, so each gets its own dedicated subfolder), then the same treatment for the skill files (`debtCollectorSkill.ts` and `debtFormStore.ts`, sitting together in `skills/`).
+
+**What Claude Code did:**
+- Noted an unrelated change had happened outside this session: the whole `mcp-server/src/` folder had been renamed on disk to `mcp-server/Source (agent and database)/`, with `tsconfig.json`'s `rootDir`/`include` already updated to match. Flagged this to the user and asked whether to keep it or revert to `src/`; the user chose to keep it as-is, so all work below happened inside that renamed folder.
+- Moved `agent/debtinfoAgent.ts` → `agent/debtinfoAgent/debtinfoAgent.ts` and `agent/debtDraftAgent.ts` → `agent/debtDraftAgent/debtDraftAgent.ts`.
+- Moved `skills/debtCollectorSkill.ts` → `skills/debtCollectorSkill/debtCollectorSkill.ts` and `skills/debtFormStore.ts` → `skills/debtFormStore/debtFormStore.ts`.
+- Fixed every import path affected by the four moves: the two agents' cross-import of each other, the Skill's import of its form store, and the three call sites in `telegram/poller.ts`, plus doc-comment references mentioning the old paths.
+- Used plain `mv` (not `git mv`) since the earlier `src` → `Source (agent and database)` rename happened outside git, leaving everything under that folder untracked.
+
+**Files created/modified:**
+- mcp-server/Source (agent and database)/agent/debtinfoAgent/debtinfoAgent.ts (moved + import paths fixed)
+- mcp-server/Source (agent and database)/agent/debtDraftAgent/debtDraftAgent.ts (moved + import paths fixed)
+- mcp-server/Source (agent and database)/skills/debtCollectorSkill/debtCollectorSkill.ts (moved + import paths fixed)
+- mcp-server/Source (agent and database)/skills/debtFormStore/debtFormStore.ts (moved + import path fixed)
+- mcp-server/Source (agent and database)/telegram/poller.ts (updated import paths to all four moved files)
+- BUILD_LOG.md
+
+**Result:**
+Each agent and each skill module now lives in its own dedicated subfolder. No behavior change.
+
+**Testing / verification:**
+- `npx tsc --noEmit` — clean.
+- Clean `npm run build` (after deleting `dist/`) — clean; confirmed compiled output landed at the expected new nested paths (e.g. `dist/agent/debtinfoAgent/debtinfoAgent.js`).
+- Restarted the detached bot process; started cleanly with no errors.
+
+**Claude Code token usage:**
+Not available.
+
+**Notes / issues:**
+The `mcp-server/src` → `mcp-server/Source (agent and database)` rename (not made by me) means this whole source tree is currently untracked by git under its new path (git still shows the old `src/*` files as deleted). Not fixed here since it wasn't part of this request, but worth resolving before the next commit.
