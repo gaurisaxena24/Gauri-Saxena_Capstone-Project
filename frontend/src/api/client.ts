@@ -153,6 +153,7 @@ export interface Expense {
   imageUrl: string | null;
   createdAt: string;
   extractionMethod?: "vision" | "ocr";
+  extractionFailed?: boolean;
 }
 
 export const createManualExpense = (input: {
@@ -184,8 +185,18 @@ export const listExpenses = () => request<{ expenses: Expense[] }>("/expenses");
 export type ShareMode = "FULL" | "HALF" | "CUSTOM";
 
 export interface ReminderContext {
-  person: { name: string; telegramUsername: string; relationship: string };
-  debt: { amount: number; currency: string; date: string | null; category: string | null; reason: string };
+  person: { name: string; telegramUsername: string; relationship: string; description: string | null };
+  debt: {
+    amount: number;
+    expenseTotal: number;
+    currency: string;
+    date: string | null;
+    category: string | null;
+    reason: string;
+    shareMode: ShareMode;
+    additionalContext: string | null;
+    desiredAction: string | null;
+  };
   history: { previousDebts: number; previousReminders: number; previousPaidDebts: number; daysOutstanding: number };
 }
 
@@ -204,10 +215,19 @@ export interface DebtSummary {
   paidAt: string | null;
   expenseMerchant: string | null;
   expenseCategory: string | null;
+  shareMode: ShareMode | null;
+  additionalContext: string | null;
+  desiredAction: string | null;
 }
 
-export const createDebt = (input: { expenseId: number; personId: number; mode: ShareMode; customAmount?: number }) =>
-  request<DebtSummary>("/debts", { method: "POST", body: json(input) });
+export const createDebt = (input: {
+  expenseId: number;
+  personId: number;
+  mode: ShareMode;
+  customAmount?: number;
+  additionalContext?: string;
+  desiredAction?: string;
+}) => request<DebtSummary>("/debts", { method: "POST", body: json(input) });
 
 export const generateMessage = (debtId: number, input: { tone?: string; regenerate?: boolean } = {}) =>
   request<DebtSummary & { reasoning: string }>(`/debts/${debtId}/generate-message`, {

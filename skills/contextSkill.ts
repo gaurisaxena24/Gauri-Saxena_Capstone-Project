@@ -28,13 +28,18 @@ export function buildReminderContext(params: {
       name: person.name,
       telegramUsername: person.telegram_username,
       relationship: person.relationship ?? "friend",
+      description: person.notes ?? null,
     },
     debt: {
       amount: debt.amount,
+      expenseTotal: expense.total,
       currency: debt.currency ?? expense.currency ?? "INR",
       date: expense.expense_date,
       category: expense.category,
       reason: expense.description ?? expense.merchant ?? expense.category ?? "a shared expense",
+      shareMode: debt.share_mode ?? "FULL",
+      additionalContext: debt.additional_context,
+      desiredAction: debt.desired_action,
     },
     history: {
       previousDebts: priorDebts.length,

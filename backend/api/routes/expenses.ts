@@ -18,7 +18,10 @@ const EXT_TO_MIME: Record<string, string> = {
   ".heic": "image/heic",
 };
 
-function toExpensePayload(expense: Expense, extra: { extractionMethod?: "vision" | "ocr" } = {}) {
+function toExpensePayload(
+  expense: Expense,
+  extra: { extractionMethod?: "vision" | "ocr"; extractionFailed?: boolean } = {}
+) {
   return {
     id: expense.id,
     source: expense.source,
@@ -89,10 +92,10 @@ expensesRouter.post("/extract", (req, res) => {
     try {
       const imageBuffer = await readFile(req.file.path);
       const mediaType = EXT_TO_MIME[extname(req.file.path).toLowerCase()] ?? req.file.mimetype;
-      const { extraction, method } = await agent.readImageExpense(imageBuffer, mediaType);
+      const { extraction, method, extractionFailed } = await agent.readImageExpense(imageBuffer, mediaType);
 
       const expense = agent.createImageExpense({ extraction, method, imagePath: req.file.path });
-      res.status(201).json(toExpensePayload(expense, { extractionMethod: method }));
+      res.status(201).json(toExpensePayload(expense, { extractionMethod: method, extractionFailed }));
     } catch (error) {
       await cleanupUpload();
       if (error instanceof AiNotConfiguredError) {

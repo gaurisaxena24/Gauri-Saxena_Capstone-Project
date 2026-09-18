@@ -25,6 +25,13 @@ type Step = "choice" | "upload" | "manual" | "extracted" | "person" | "amount" |
 
 const TONES = ["Casual", "Funny", "Passive-Aggressive", "Unhinged"] as const;
 const PAYMENT_METHODS = ["UPI", "Google Pay", "Cash", "Card", "Bank Transfer", "Other"];
+const DESIRED_ACTIONS = [
+  "Send their share",
+  "Pay the full amount",
+  "Send it today",
+  "Tell me when they'll pay",
+  "Other",
+];
 
 function StepIndicator({ current }: { current: Step }) {
   const order: Step[] = ["choice", "person", "amount", "message"];
@@ -111,6 +118,7 @@ export function AddExpenseFlow() {
   const [newPersonUsername, setNewPersonUsername] = useState("");
   const [newPersonRelationship, setNewPersonRelationship] = useState("");
   const [newPersonPhone, setNewPersonPhone] = useState("");
+  const [newPersonDescription, setNewPersonDescription] = useState("");
   const [personError, setPersonError] = useState<string | null>(null);
   const [savingPerson, setSavingPerson] = useState(false);
 
@@ -119,6 +127,11 @@ export function AddExpenseFlow() {
   const [customAmount, setCustomAmount] = useState("");
   const [confirmingAmount, setConfirmingAmount] = useState(false);
   const [amountError, setAmountError] = useState<string | null>(null);
+
+  // Optional context for the AI message
+  const [additionalContext, setAdditionalContext] = useState("");
+  const [desiredActionChoice, setDesiredActionChoice] = useState("");
+  const [customDesiredAction, setCustomDesiredAction] = useState("");
 
   // Debt + message
   const [debt, setDebt] = useState<(DebtSummary & { context?: ReminderContext }) | null>(null);
@@ -216,6 +229,7 @@ export function AddExpenseFlow() {
           telegramUsername: newPersonUsername.trim(),
           relationship: newPersonRelationship.trim() || undefined,
           phoneNumber: newPersonPhone.trim() || undefined,
+          notes: newPersonDescription.trim() || undefined,
         });
         setSelectedPersonId(person.id);
         setStep("amount");
@@ -247,12 +261,16 @@ export function AddExpenseFlow() {
     }
     setAmountError(null);
     setConfirmingAmount(true);
+    const resolvedDesiredAction =
+      desiredActionChoice === "Other" ? customDesiredAction.trim() : desiredActionChoice;
     try {
       const created = await createDebt({
         expenseId: expense.id,
         personId: selectedPersonId,
         mode,
         customAmount: mode === "CUSTOM" ? Number(customAmount) : undefined,
+        additionalContext: additionalContext.trim() || undefined,
+        desiredAction: resolvedDesiredAction || undefined,
       });
       setDebt(created);
       setStep("message");
@@ -454,11 +472,19 @@ export function AddExpenseFlow() {
 
       {step === "extracted" && expense && (
         <div>
-          <h1 className="font-display mb-2 text-2xl font-bold text-ink">Expense detected</h1>
-          <p className="mb-6 text-sm text-ink-soft">
-            Read via {expense.extractionMethod === "ocr" ? "OCR + text AI" : "AI vision"}. Check the details and fix
-            anything that's wrong.
-          </p>
+          <h1 className="font-display mb-2 text-2xl font-bold text-ink">
+            {expense.extractionFailed ? "Couldn't read that image" : "Expense detected"}
+          </h1>
+          {expense.extractionFailed ? (
+            <div className="mb-6">
+              <ErrorBanner message="We couldn't make out the details in that image. No problem — just fill them in below yourself." />
+            </div>
+          ) : (
+            <p className="mb-6 text-sm text-ink-soft">
+              Read via {expense.extractionMethod === "ocr" ? "OCR + text AI" : "AI vision"}. Check the details and fix
+              anything that's wrong.
+            </p>
+          )}
 
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-[1fr_1.2fr]">
             {previewUrl && (
@@ -557,6 +583,18 @@ export function AddExpenseFlow() {
               <Field label="Telegram username" value={newPersonUsername} onChange={setNewPersonUsername} placeholder="rahul123" />
               <Field label="Phone number" value={newPersonPhone} onChange={setNewPersonPhone} placeholder="Optional" />
               <Field label="Relationship" value={newPersonRelationship} onChange={setNewPersonRelationship} placeholder="Friend, roommate, coworker…" />
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-ink">
+                  Describe them (optional, but shapes the reminder's tone)
+                </span>
+                <textarea
+                  value={newPersonDescription}
+                  onChange={(e) => setNewPersonDescription(e.target.value)}
+                  placeholder="e.g. laid-back, jokes around a lot, always forgets to pay but means well"
+                  rows={2}
+                  className="w-full resize-none rounded-lg border border-border bg-paper p-3 text-sm text-ink outline-none focus:border-ink"
+                />
+              </label>
               <button onClick={() => setAddingNewPerson(false)} className="text-sm font-medium text-ink-soft hover:text-ink">
                 ← Choose an existing person instead
               </button>
@@ -609,6 +647,45 @@ export function AddExpenseFlow() {
               {people.find((p) => p.id === selectedPersonId)?.name ?? "This person"} owes {formatCurrency(computedAmount)}
             </p>
           )}
+
+          <div className="mt-6 space-y-4 rounded-2xl border border-border bg-card p-5">
+            <label className="block">
+              <span className="mb-1 block text-sm font-medium text-ink">Additional context (optional)</span>
+              <textarea
+                value={additionalContext}
+                onChange={(e) => setAdditionalContext(e.target.value)}
+                placeholder="Anything worth knowing — e.g. they already said they'd pay Friday"
+                rows={2}
+                className="w-full resize-none rounded-lg border border-border bg-paper p-3 text-sm text-ink outline-none focus:border-ink"
+              />
+            </label>
+
+            <div>
+              <span className="mb-1 block text-sm font-medium text-ink">What do you want them to do? (optional)</span>
+              <div className="flex flex-wrap gap-2">
+                {DESIRED_ACTIONS.map((action) => (
+                  <button
+                    key={action}
+                    type="button"
+                    onClick={() => setDesiredActionChoice(desiredActionChoice === action ? "" : action)}
+                    className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                      desiredActionChoice === action ? "bg-ink text-paper" : "bg-ink/5 text-ink-soft hover:bg-ink/10"
+                    }`}
+                  >
+                    {action}
+                  </button>
+                ))}
+              </div>
+              {desiredActionChoice === "Other" && (
+                <input
+                  value={customDesiredAction}
+                  onChange={(e) => setCustomDesiredAction(e.target.value)}
+                  placeholder="Type what you want them to do"
+                  className="mt-2 w-full rounded-lg border border-border bg-paper px-3 py-2 text-sm text-ink outline-none focus:border-ink"
+                />
+              )}
+            </div>
+          </div>
 
           {amountError && (
             <div className="mt-4">

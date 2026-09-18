@@ -76,7 +76,12 @@ export function People() {
             <Field label="Phone number" value={phoneNumber} onChange={setPhoneNumber} placeholder="Optional" />
             <Field label="Relationship" value={relationship} onChange={setRelationship} placeholder="Friend, roommate…" />
           </div>
-          <Field label="Notes" value={notes} onChange={setNotes} placeholder="Optional" />
+          <Field
+            label="Describe them (shapes the reminder's tone)"
+            value={notes}
+            onChange={setNotes}
+            placeholder="e.g. laid-back, jokes around a lot, always forgets to pay but means well"
+          />
           {addError && <ErrorBanner message={addError} />}
           <button
             onClick={handleAdd}

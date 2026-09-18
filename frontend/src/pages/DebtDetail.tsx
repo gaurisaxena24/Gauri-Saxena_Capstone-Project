@@ -76,11 +76,25 @@ export function DebtDetail() {
           <div className="rounded-2xl border border-border bg-card p-5">
             <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-soft">AI context used</h2>
             <dl className="space-y-1 text-sm">
+              <Row label="Share" value={`${debt.context.debt.shareMode} of ${formatCurrency(debt.context.debt.expenseTotal)}`} />
               <Row label="Previous debts" value={String(debt.context.history.previousDebts)} />
               <Row label="Previous reminders" value={String(debt.context.history.previousReminders)} />
               <Row label="Previously paid" value={String(debt.context.history.previousPaidDebts)} />
               <Row label="Days outstanding" value={String(debt.context.history.daysOutstanding)} />
+              {debt.context.debt.desiredAction && <Row label="Requested action" value={debt.context.debt.desiredAction} />}
             </dl>
+            {debt.context.person.description && (
+              <p className="mt-3 border-t border-border pt-3 text-sm text-ink-soft">
+                <span className="text-ink-faint">Person description used: </span>
+                {debt.context.person.description}
+              </p>
+            )}
+            {debt.context.debt.additionalContext && (
+              <p className="mt-2 text-sm text-ink-soft">
+                <span className="text-ink-faint">Additional context used: </span>
+                {debt.context.debt.additionalContext}
+              </p>
+            )}
           </div>
         )}
       </div>

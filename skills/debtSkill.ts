@@ -23,6 +23,7 @@ import {
   type ExpenseDebt,
   type ExpenseLineItem,
   type ExpenseSource,
+  type ShareModeValue,
 } from "../backend/database/database.js";
 
 export interface NewExpenseInput {
@@ -78,6 +79,9 @@ export function attachDebt(input: {
   personId: number;
   amount: number;
   currency: string | null;
+  shareMode: ShareModeValue;
+  additionalContext: string | null;
+  desiredAction: string | null;
   contextJson: unknown;
 }): ExpenseDebt {
   return createExpenseDebt(input);

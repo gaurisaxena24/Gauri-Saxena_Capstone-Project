@@ -6,7 +6,7 @@
  * ever triggered by the user's own "Send on Telegram" click.
  */
 
-import { readExpenseFromImage, type ExtractionMethod } from "../skills/expenseReaderSkill.js";
+import { readExpenseFromImage, type ExpenseReadResult, type ExtractionMethod } from "../skills/expenseReaderSkill.js";
 import * as profileSkill from "../skills/profileSkill.js";
 import * as debtSkill from "../skills/debtSkill.js";
 import { computeShare, type ShareMode } from "../skills/debtCalculationSkill.js";
@@ -17,10 +17,7 @@ import * as reminderSkill from "../skills/reminderSkill.js";
 import type { ExpenseExtraction, ReminderContext, Tone } from "../backend/ai/types.js";
 import type { Expense, ExpenseDebt, Person } from "../backend/database/database.js";
 
-export async function readImageExpense(
-  imageBuffer: Buffer,
-  mediaType: string
-): Promise<{ extraction: ExpenseExtraction; method: ExtractionMethod }> {
+export async function readImageExpense(imageBuffer: Buffer, mediaType: string): Promise<ExpenseReadResult> {
   return readExpenseFromImage(imageBuffer, mediaType);
 }
 
@@ -83,6 +80,8 @@ export function attachPersonToExpense(params: {
   personId: number;
   mode: ShareMode;
   customAmount?: number;
+  additionalContext?: string | null;
+  desiredAction?: string | null;
 }): { debt: ExpenseDebt; context: ReminderContext } {
   const expense = debtSkill.getExpenseById(params.expenseId);
   if (!expense) throw new Error("Expense not found.");
@@ -95,6 +94,9 @@ export function attachPersonToExpense(params: {
     personId: person.id,
     amount,
     currency: expense.currency,
+    shareMode: params.mode,
+    additionalContext: params.additionalContext?.trim() || null,
+    desiredAction: params.desiredAction?.trim() || null,
     contextJson: null,
   });
 

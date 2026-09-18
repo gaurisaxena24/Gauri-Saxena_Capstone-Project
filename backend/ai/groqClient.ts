@@ -27,6 +27,15 @@ async function callChat(params: {
   system: string;
   userContent: unknown;
   maxTokens?: number;
+  /**
+   * Only meaningful for reasoning models (e.g. openai/gpt-oss-*), which spend
+   * an unbounded, hidden chain-of-thought budget out of `max_tokens` before
+   * emitting any actual content. Left unset, existing callers (message
+   * generation) are completely unaffected. Passed explicitly by callers that
+   * need the JSON payload to reliably fit within max_tokens — see
+   * skills/expenseReaderSkill.ts.
+   */
+  reasoningEffort?: "low" | "medium" | "high";
 }): Promise<string> {
   const apiKey = getGroqApiKey();
 
@@ -41,6 +50,7 @@ async function callChat(params: {
       body: JSON.stringify({
         model: params.model,
         max_tokens: params.maxTokens ?? 1024,
+        ...(params.reasoningEffort ? { reasoning_effort: params.reasoningEffort } : {}),
         messages: [
           { role: "system", content: params.system },
           { role: "user", content: params.userContent },
@@ -72,8 +82,19 @@ async function callChat(params: {
   return text;
 }
 
-export function callGroqText(params: { system: string; prompt: string; maxTokens?: number }): Promise<string> {
-  return callChat({ model: getTextModel(), system: params.system, userContent: params.prompt, maxTokens: params.maxTokens });
+export function callGroqText(params: {
+  system: string;
+  prompt: string;
+  maxTokens?: number;
+  reasoningEffort?: "low" | "medium" | "high";
+}): Promise<string> {
+  return callChat({
+    model: getTextModel(),
+    system: params.system,
+    userContent: params.prompt,
+    maxTokens: params.maxTokens,
+    reasoningEffort: params.reasoningEffort,
+  });
 }
 
 export function callGroqVision(params: {
@@ -83,11 +104,13 @@ export function callGroqVision(params: {
   imageBase64: string;
   mediaType: string;
   maxTokens?: number;
+  reasoningEffort?: "low" | "medium" | "high";
 }): Promise<string> {
   return callChat({
     model: params.model,
     system: params.system,
     maxTokens: params.maxTokens,
+    reasoningEffort: params.reasoningEffort,
     userContent: [
       { type: "text", text: params.prompt },
       { type: "image_url", image_url: { url: `data:${params.mediaType};base64,${params.imageBase64}` } },

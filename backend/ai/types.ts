@@ -26,13 +26,23 @@ export interface ReminderContext {
     name: string;
     telegramUsername: string;
     relationship: string;
+    /** Who they are / their personality / how they handle money — shapes HOW the message is written, not just facts it states. */
+    description: string | null;
   };
   debt: {
+    /** This person's share. */
     amount: number;
+    /** The full original expense amount, for reference when amount is a partial share. */
+    expenseTotal: number;
     currency: string;
     date: string | null;
     category: string | null;
     reason: string;
+    shareMode: "FULL" | "HALF" | "CUSTOM";
+    /** Free-text context the user typed when creating this debt (e.g. "she already promised to pay Friday"). */
+    additionalContext: string | null;
+    /** What the user wants this message to actually ask for (e.g. "Send it today"). */
+    desiredAction: string | null;
   };
   history: {
     previousDebts: number;
@@ -75,20 +85,50 @@ export function extractJson<T>(raw: string): T {
   }
 }
 
-export function normalizeExpenseExtraction(parsed: Partial<ExpenseExtraction>): ExpenseExtraction {
+export function emptyExpenseExtraction(): ExpenseExtraction {
   return {
-    merchant: parsed.merchant ?? null,
-    date: parsed.date ?? null,
-    total: typeof parsed.total === "number" ? parsed.total : null,
-    currency: parsed.currency ?? null,
-    tax: typeof parsed.tax === "number" ? parsed.tax : null,
-    tip: typeof parsed.tip === "number" ? parsed.tip : null,
-    category: parsed.category ?? null,
-    paymentMethod: parsed.paymentMethod ?? null,
-    transactionReference: parsed.transactionReference ?? null,
-    lineItems: Array.isArray(parsed.lineItems) ? parsed.lineItems : [],
-    visibleNames: Array.isArray(parsed.visibleNames) ? parsed.visibleNames : [],
-    description: parsed.description ?? null,
+    merchant: null,
+    date: null,
+    total: null,
+    currency: null,
+    tax: null,
+    tip: null,
+    category: null,
+    paymentMethod: null,
+    transactionReference: null,
+    lineItems: [],
+    visibleNames: [],
+    description: null,
+  };
+}
+
+/**
+ * The vision/OCR extraction step's own contract — deliberately flat and
+ * minimal (7 fields, no nested arrays-of-objects) so the model has as little
+ * structure to get wrong as possible, keeping the JSON small and reliable to
+ * generate. Mapped onto the richer internal `ExpenseExtraction` immediately
+ * after parsing (see `mapRawExtractionToExpense`); nothing downstream ever
+ * sees this shape.
+ */
+export interface RawExpenseExtraction {
+  amount: number | null;
+  currency: string | null;
+  date: string | null;
+  merchant_or_person: string | null;
+  description: string | null;
+  people: string[];
+  raw_context: string | null;
+}
+
+export function mapRawExtractionToExpense(raw: Partial<RawExpenseExtraction>): ExpenseExtraction {
+  return {
+    ...emptyExpenseExtraction(),
+    merchant: raw.merchant_or_person ?? null,
+    date: raw.date ?? null,
+    total: typeof raw.amount === "number" ? raw.amount : null,
+    currency: raw.currency ?? null,
+    visibleNames: Array.isArray(raw.people) ? raw.people : [],
+    description: raw.description ?? raw.raw_context ?? null,
   };
 }
 
@@ -103,41 +143,63 @@ export function normalizeGeneratedReminder(
   return { tone, reasoning: parsed.reasoning ?? "", message: parsed.message };
 }
 
-export const EXPENSE_SYSTEM_PROMPT =
-  "You extract structured data from a photo or scanned text of a payment/expense record. This could " +
-  "be a restaurant bill, a shop receipt, a Google Pay/UPI payment screenshot, a bank transfer " +
-  "confirmation, a shopping receipt, or any other expense/payment screenshot — do not assume it is a " +
-  "traditional itemized bill. Only report what is actually visible/legible. Never invent a merchant " +
-  "name, date, amount, payment method, or item. If a field can't be determined, use null (or [] for " +
-  "list fields).";
+export const EXPENSE_SYSTEM_PROMPT = `You extract expense/payment information from a photo or scanned text of a payment/expense record. \
+This could be a restaurant bill, a shop receipt, a Google Pay/UPI payment screenshot, a Splitwise \
+screenshot, a Telegram payment/expense screenshot, a bank transfer confirmation, or any other \
+expense screenshot. Do not assume it is a traditional itemized bill — for example, a Google Pay \
+screenshot may just show a payment to a person with no itemization at all, and a Splitwise \
+screenshot may already state the expense name and split. Interpret whatever is actually visible.
 
-export const EXPENSE_USER_PROMPT = `Extract the expense/payment details and respond with ONLY a JSON object, no prose, in exactly this shape:
+Only report what is actually visible/legible. Never invent an amount, name, date, or any other \
+detail that isn't shown.
+
+Respond with ONLY valid JSON. Do not include markdown code fences. Do not include any explanation \
+or prose before or after the JSON — output nothing but the JSON object itself. Use null for any \
+field you can't identify (or [] for the people list) — a field being missing is expected and fine. \
+If the image can't be understood at all, still return the same JSON shape with every field null/empty \
+rather than failing to produce valid JSON.`;
+
+export const EXPENSE_USER_PROMPT = `Extract whatever expense/payment information is actually visible and respond with ONLY this JSON shape, nothing else:
 {
-  "merchant": string | null,        // who was paid / merchant name
-  "date": string | null,            // as shown, or ISO 8601 if you can normalize it confidently
-  "total": number | null,           // final amount, plain number, no currency symbol
-  "currency": string | null,        // e.g. "INR", "USD", or the symbol actually shown
-  "tax": number | null,
-  "tip": number | null,
-  "category": string | null,        // one short word: "food", "groceries", "transport", "utilities", "shopping", "travel", "rent", "other"
-  "paymentMethod": string | null,   // e.g. "UPI", "Google Pay", "Cash", "Card", "Bank Transfer"
-  "transactionReference": string | null,  // UPI ref / transaction ID if shown
-  "lineItems": [{ "name": string, "price": number }],  // [] if this is a payment screenshot with no itemization
-  "visibleNames": string[],         // any person names actually printed (e.g. payer/payee names); [] if none
-  "description": string | null      // a short natural description if the source itself states a note/purpose
+  "amount": number | null,
+  "currency": string | null,
+  "date": string | null,
+  "merchant_or_person": string | null,
+  "description": string | null,
+  "people": string[],
+  "raw_context": string | null
 }`;
 
 export const REMINDER_SYSTEM_PROMPT = `You are the message-writing component of "Unhinged Debt Collector", an app that helps a \
-person write a Telegram reminder to a friend/roommate/coworker who owes them money.
+person write a Telegram debt reminder to someone who owes them money.
+
+The context you receive always has three layers, and the message must genuinely be a synthesis of \
+all three — never a generic "you owe me money" template with the name swapped in:
+
+1. person.description — who this person is, their personality, how they communicate or handle \
+money. This should shape HOW the message is written: word choice, how casual or teasing it can be, \
+whether directness would land as normal or as harsh for someone like them.
+2. person.relationship — best friend, roommate, sibling, colleague, ex, acquaintance, etc. This \
+should strongly affect tone: what's normal banter between best friends (heavy teasing, in-jokes, \
+very casual) would be inappropriate for a colleague or acquaintance (more polite, more direct, less \
+familiar), and different again for an ex or a sibling. Two messages about the identical debt to two \
+people with different relationships/descriptions should read like they were written by the same \
+person to genuinely different people — not like a template with a name and number swapped.
+3. debt — the actual facts: amount owed (this may be the full expense, half, or a custom split — \
+say so naturally if it's not the full amount), what it was for, how overdue it is, and reminder \
+history. This is the factual backbone; never invent an amount, date, prior promise, conversation, \
+or excuse that isn't actually in the context.
+
+If debt.desiredAction is set, the message must actually ask for that specific thing (e.g. "send it \
+today", "tell me when you'll pay") rather than a generic "pay me back". If debt.additionalContext is \
+set, treat it as true background the person supplied and weave it in naturally — never contradict it.
 
 Rules you must follow exactly:
-- Use ONLY the facts given to you in the context JSON. Never invent an amount, date, prior promise, \
-conversation, or excuse that isn't in the context.
 - Escalation tone must be one of exactly: "Casual", "Funny", "Passive-Aggressive", "Unhinged".
-- If the caller does not force a tone, pick the one tone that best fits the relationship, amount, \
-and reminder history, and explain briefly why in "reasoning".
-- The message must stay short (2-4 sentences), read like a real Telegram message from one person to \
-a friend, and reference the actual debt details naturally.
+- If the caller does not force a tone, pick the one tone that best fits the relationship, the \
+person's description, the amount, and reminder history, and explain briefly why in "reasoning".
+- The message must stay short (2-4 sentences) and read like a real Telegram message this specific \
+person would actually send to this specific other person — not a form letter.
 - Even at "Unhinged", the message must be funny/dramatic, never a real threat, never harassment.
 - If asked to regenerate, write a genuinely different phrasing/joke from the previous message, at the \
 same tone.

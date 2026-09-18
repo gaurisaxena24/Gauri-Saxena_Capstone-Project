@@ -33,18 +33,23 @@ function toDebtPayload(debt: ExpenseDebt) {
     paidAt: debt.paid_at,
     expenseMerchant: expense?.merchant ?? null,
     expenseCategory: expense?.category ?? null,
+    shareMode: debt.share_mode,
+    additionalContext: debt.additional_context,
+    desiredAction: debt.desired_action,
   };
 }
 
 /** Person + share decision on an existing expense → creates the debt and its cached AI context. */
 debtsRouter.post("/", (req, res) => {
-  const { expenseId, personId, mode, customAmount } = req.body ?? {};
+  const { expenseId, personId, mode, customAmount, additionalContext, desiredAction } = req.body ?? {};
   try {
     const { debt } = agent.attachPersonToExpense({
       expenseId: Number(expenseId),
       personId: Number(personId),
       mode: mode as ShareMode,
       customAmount: customAmount !== undefined ? Number(customAmount) : undefined,
+      additionalContext: additionalContext ?? null,
+      desiredAction: desiredAction ?? null,
     });
     res.status(201).json(toDebtPayload(debt));
   } catch (error) {

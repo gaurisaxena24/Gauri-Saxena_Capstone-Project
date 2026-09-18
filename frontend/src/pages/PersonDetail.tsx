@@ -86,7 +86,11 @@ export function PersonDetail() {
               value={editFields.phoneNumber}
               onChange={(v) => setEditFields({ ...editFields, phoneNumber: v })}
             />
-            <Field label="Notes" value={editFields.notes} onChange={(v) => setEditFields({ ...editFields, notes: v })} />
+            <Field
+              label="Describe them (shapes reminder tone)"
+              value={editFields.notes}
+              onChange={(v) => setEditFields({ ...editFields, notes: v })}
+            />
             <div className="flex gap-2">
               <button onClick={saveEdits} disabled={saving} className="rounded-full bg-ink px-4 py-1.5 text-sm font-semibold text-paper">
                 {saving ? "Saving…" : "Save"}

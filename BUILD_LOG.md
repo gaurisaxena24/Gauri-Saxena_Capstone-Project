@@ -448,3 +448,27 @@ Figure out why a newly-added person ("Sara") couldn't be verified after saying "
 **Claude Code token usage:** Not available.
 
 **Notes / issues:** None outstanding. The MCP-tool-driven Telegram draft/approval flow (separate from the removed conversational flow) was not exercised in this session since it requires a live MCP host to invoke it — its code was left untouched and still compiles/imports correctly.
+
+## 2026-09-18 (6)
+### Task: Base the reminder message on person description + relationship + expense context + desired action
+
+**What I asked Claude Code to do:**
+Change how the AI generates the final reminder so it's a genuine synthesis of (1) a description of the person's personality/behavior, (2) the relationship, and (3) the expense/debt facts — not a generic template — plus support an optional "what do you want them to do?" field. Keep everything else (Telegram, database structure, agent, other features) intact; make the smallest changes necessary.
+
+**What Claude Code did:**
+- Inspected and confirmed the exact responsibility of each layer first: form state (`AddExpenseFlow.tsx`, `People.tsx`/`PersonDetail.tsx`), image/expense extraction (`skills/expenseReaderSkill.ts`), debt state (`backend/database/database.ts`, `skills/debtSkill.ts`), message generation (`skills/messageDraftSkill.ts`, `skills/contextSkill.ts`, `backend/ai/types.ts`), and Telegram sending (`skills/telegramSkill.ts`, unrelated to this change and left untouched).
+- Found the actual gap: a person's `notes` field already existed in the database but was **never included** in the AI's context object — the "person description" input the user wanted was already collectable but silently discarded before reaching the model. Relationship was already flowing through correctly.
+- Added `share_mode`, `additional_context`, `desired_action` columns to `expense_debts` (additive, existing rows unaffected) so which of full/half/custom a debt represents, and the two new optional fields, persist with it and feed the same context on every regenerate/tone-change rather than being asked for again.
+- Extended `ReminderContext` (`backend/ai/types.ts`) with `person.description`, `debt.expenseTotal`, `debt.shareMode`, `debt.additionalContext`, `debt.desiredAction`, and rewrote `REMINDER_SYSTEM_PROMPT` to explicitly instruct the model that person description + relationship must shape *how* the message is written (casualness, teasing, directness, realistic language between these two specific people) while the expense facts remain the factual backbone — and that `desiredAction`, when set, is what the message must actually ask for.
+- `skills/contextSkill.ts` now builds all of this from the database; `agent/debtCollectorAgent.ts`'s `attachPersonToExpense` now accepts and persists `additionalContext`/`desiredAction` alongside the share mode.
+- Frontend: `AddExpenseFlow.tsx` gained an "Additional context" textarea and a "What do you want them to do?" preset-or-custom picker on the amount step, and a "Describe them" field on the inline add-person form (also relabeled the standalone People/PersonDetail "Notes" fields to make clear they shape reminder tone). `DebtDetail.tsx` now shows the share/description/context/desired-action actually used, for transparency.
+- Separately, per the request to keep image input working gracefully: `agent/debtCollectorAgent.ts` and the `/expenses/extract` route now surface the `extractionFailed` flag (already computed by the reader skill from a prior session) all the way to the frontend, which shows a clear "we couldn't read that image, please fill it in yourself" notice on the review step instead of silently showing a blank form.
+- Verified the core requirement directly: created two people with contrasting descriptions/relationships (a chaotic best friend vs. a formal colleague), attached the identical expense/debt/desired-action/forced-tone to both, and confirmed the two generated messages were genuinely different in voice — teasing and casual for one, formal and polite for the other — while both correctly stated the same facts and the same requested action.
+
+**Files modified:** `backend/database/database.ts`, `backend/ai/types.ts`, `skills/contextSkill.ts`, `skills/debtSkill.ts`, `agent/debtCollectorAgent.ts`, `backend/api/routes/{debts,expenses}.ts`, `frontend/src/{api/client.ts,pages/AddExpenseFlow.tsx,pages/People.tsx,pages/PersonDetail.tsx,pages/DebtDetail.tsx}`. Telegram sending, the MCP server, and the retired-flow cleanup from earlier sessions were not touched.
+
+**Testing / verification:** Backend and frontend both build clean. Full end-to-end test via curl: two contrasting people, identical expense/debt facts, identical forced tone — the generated messages differed exactly as intended (casual/teasing vs. formal/polite) while both stayed factually accurate and honored the requested action ("send it today"). Test data cleaned up afterward.
+
+**Claude Code token usage:** Not available.
+
+**Notes / issues:** None outstanding.

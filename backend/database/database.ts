@@ -159,6 +159,12 @@ function getDb(): DatabaseSync {
   addColumnIfMissing(db, "people", "verification_code", "TEXT");
   backfillVerificationCodes(db);
 
+  // How much of the expense this debt covers, plus optional context the user
+  // supplies when creating it — both feed the AI reminder's social context.
+  addColumnIfMissing(db, "expense_debts", "share_mode", "TEXT");
+  addColumnIfMissing(db, "expense_debts", "additional_context", "TEXT");
+  addColumnIfMissing(db, "expense_debts", "desired_action", "TEXT");
+
   // Superseded by expenses/expense_debts (previous iteration of the web
   // flow, before "expense" replaced "bill" as the core object). Both were
   // introduced by this same web app and are empty of anything but already-
@@ -481,6 +487,8 @@ export function updateExpense(
 
 export type DebtStatus = "UNPAID" | "PAID";
 
+export type ShareModeValue = "FULL" | "HALF" | "CUSTOM";
+
 export interface ExpenseDebt {
   id: number;
   expense_id: number;
@@ -492,6 +500,9 @@ export interface ExpenseDebt {
   tone: string | null;
   message_edited: number;
   context_json: string | null;
+  share_mode: ShareModeValue | null;
+  additional_context: string | null;
+  desired_action: string | null;
   created_at: string;
   paid_at: string | null;
 }
@@ -501,13 +512,17 @@ export function createExpenseDebt(input: {
   personId: number;
   amount: number;
   currency: string | null;
+  shareMode: ShareModeValue;
+  additionalContext: string | null;
+  desiredAction: string | null;
   contextJson: unknown;
 }): ExpenseDebt {
   const database = getDb();
   const created_at = new Date().toISOString();
   const stmt = database.prepare(
-    `INSERT INTO expense_debts (expense_id, person_id, amount, currency, status, context_json, created_at)
-     VALUES (?, ?, ?, ?, 'UNPAID', ?, ?)`
+    `INSERT INTO expense_debts
+       (expense_id, person_id, amount, currency, status, context_json, share_mode, additional_context, desired_action, created_at)
+     VALUES (?, ?, ?, ?, 'UNPAID', ?, ?, ?, ?, ?)`
   );
   const result = stmt.run(
     input.expenseId,
@@ -515,6 +530,9 @@ export function createExpenseDebt(input: {
     input.amount,
     input.currency,
     input.contextJson != null ? JSON.stringify(input.contextJson) : null,
+    input.shareMode,
+    input.additionalContext,
+    input.desiredAction,
     created_at
   );
   return getExpenseDebt(Number(result.lastInsertRowid))!;
