@@ -4,6 +4,9 @@
   "description": "MCP server for Unhinged Debt Collector (Telegram tool)",
   "type": "module",
   "main": "compiled/debt-collector-telegram-system/backend/index.js",
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node compiled/debt-collector-telegram-system/backend/index.js",
