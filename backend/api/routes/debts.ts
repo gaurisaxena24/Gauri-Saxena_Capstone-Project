@@ -163,6 +163,15 @@ debtsRouter.post("/:id/send", async (req, res) => {
     return;
   }
 
+  // Idempotency guard against a genuine double-send (two rapid clicks, two tabs, a retried
+  // request) — the database, not just the frontend's disabled-button state, is the source of
+  // truth for whether this debt has already been sent.
+  const alreadySent = reminderSkill.historyForDebt(debt.id).some((r) => r.status === "SENT");
+  if (alreadySent) {
+    res.json({ success: true, note: "Already sent via Telegram." });
+    return;
+  }
+
   try {
     const result = await agent.sendReminder(debt, person);
     if (!result.success) {
