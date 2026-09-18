@@ -129,8 +129,12 @@ export const updatePerson = (
 // ---- Expenses -----------------------------------------------------------------
 
 export interface ExpenseLineItem {
+  id: string;
   name: string;
+  quantity: number | null;
+  unitPrice: number | null;
   price: number;
+  uncertain: boolean;
 }
 
 export type ExpenseSource = "MANUAL" | "IMAGE";
@@ -142,8 +146,11 @@ export interface Expense {
   date: string | null;
   total: number;
   currency: string | null;
+  subtotal: number | null;
   tax: number | null;
   tip: number | null;
+  serviceCharge: number | null;
+  discount: number | null;
   category: string | null;
   paymentMethod: string | null;
   transactionReference: string | null;
@@ -151,6 +158,7 @@ export interface Expense {
   lineItems: ExpenseLineItem[];
   visibleNames: string[];
   imageUrl: string | null;
+  confidence: number | null;
   createdAt: string;
   extractionMethod?: "vision" | "ocr";
   extractionFailed?: boolean;
@@ -196,6 +204,7 @@ export interface ReminderContext {
     shareMode: ShareMode;
     additionalContext: string | null;
     desiredAction: string | null;
+    items: Array<{ name: string; amount: number }> | null;
   };
   history: {
     previousDebts: number;
@@ -225,6 +234,7 @@ export interface DebtSummary {
   shareMode: ShareMode | null;
   additionalContext: string | null;
   desiredAction: string | null;
+  selectedItems: Array<{ name: string; amount: number }> | null;
 }
 
 export const createDebt = (input: {
@@ -234,6 +244,7 @@ export const createDebt = (input: {
   customAmount?: number;
   additionalContext?: string;
   desiredAction?: string;
+  selectedItems?: Array<{ name: string; amount: number }>;
 }) => request<DebtSummary>("/debts", { method: "POST", body: json(input) });
 
 export const generateMessage = (debtId: number, input: { tone?: string; regenerate?: boolean } = {}) =>

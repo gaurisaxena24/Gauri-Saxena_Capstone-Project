@@ -39,6 +39,11 @@ async function callChat(params: {
 }): Promise<string> {
   const apiKey = getGroqApiKey();
 
+  if (process.env.NODE_ENV !== "production") {
+    const contentKind = Array.isArray(params.userContent) ? "multimodal (text + image)" : "text";
+    console.log(`[groq] requesting model=${params.model} content=${contentKind} maxTokens=${params.maxTokens ?? 1024}`);
+  }
+
   let response: Response;
   try {
     response = await fetch(`${BASE_URL}/chat/completions`, {

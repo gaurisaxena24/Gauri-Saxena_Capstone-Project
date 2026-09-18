@@ -70,8 +70,11 @@ export function createImageExpense(params: {
     expenseDate: extraction.date,
     total: extraction.total ?? 0,
     currency: extraction.currency,
+    subtotal: extraction.subtotal,
     tax: extraction.tax,
     tip: extraction.tip,
+    serviceCharge: extraction.serviceCharge,
+    discount: extraction.discount,
     category: extraction.category,
     paymentMethod: extraction.paymentMethod,
     transactionReference: extraction.transactionReference,
@@ -80,6 +83,7 @@ export function createImageExpense(params: {
     visibleNames: extraction.visibleNames,
     imagePath: params.imagePath,
     rawExtraction: { ...extraction, extractionMethod: params.method },
+    confidence: extraction.confidence,
   });
 }
 
@@ -90,6 +94,7 @@ export function attachPersonToExpense(params: {
   customAmount?: number;
   additionalContext?: string | null;
   desiredAction?: string | null;
+  selectedItems?: Array<{ name: string; amount: number }> | null;
 }): { debt: ExpenseDebt; context: ReminderContext } {
   const expense = debtAgent.getExpenseById(params.expenseId);
   if (!expense) throw new Error("Expense not found.");
@@ -106,6 +111,7 @@ export function attachPersonToExpense(params: {
     additionalContext: params.additionalContext?.trim() || null,
     desiredAction: params.desiredAction?.trim() || null,
     contextJson: null,
+    selectedItems: params.selectedItems ?? null,
   });
 
   const context = contextAgent.buildContext({ person, expense, debt });

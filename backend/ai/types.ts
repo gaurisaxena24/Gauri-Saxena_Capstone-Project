@@ -1,21 +1,35 @@
 export interface ExpenseLineItem {
+  /** Stable id for React keys / item-selection state. Generated if the model didn't give one. */
+  id: string;
   name: string;
+  quantity: number | null;
+  unitPrice: number | null;
+  /** Line total. Never invented: computed from quantity*unitPrice when both are known and the model didn't give a total directly, otherwise 0. */
   price: number;
+  /** True if `price` above couldn't be read or derived with confidence — the UI should flag this item for the user to check/fix rather than treat it as a solid fact. */
+  uncertain: boolean;
 }
 
 export interface ExpenseExtraction {
   merchant: string | null;
   date: string | null;
+  /** Grand total — what the bill/payment actually came to. */
   total: number | null;
   currency: string | null;
+  /** Sum of line items before tax/service/discount, if the bill states one distinctly from `total`. */
+  subtotal: number | null;
   tax: number | null;
   tip: number | null;
+  serviceCharge: number | null;
+  discount: number | null;
   category: string | null;
   paymentMethod: string | null;
   transactionReference: string | null;
   lineItems: ExpenseLineItem[];
   visibleNames: string[];
   description: string | null;
+  /** The model's own confidence (0-1) in this extraction overall — low means the image was hard to read; never a stand-in for validating specific fields. */
+  confidence: number | null;
 }
 
 export const TONES = ["Casual", "Funny", "Passive-Aggressive", "Unhinged"] as const;
@@ -43,6 +57,13 @@ export interface ReminderContext {
     additionalContext: string | null;
     /** What the user wants this message to actually ask for (e.g. "Send it today"). */
     desiredAction: string | null;
+    /**
+     * The actual item(s) this specific debt covers, when it was built from an itemized bill (e.g.
+     * [{name: "Chicken Biryani", amount: 450}, {name: "Coke", amount: 120}]) — real selected rows
+     * only, never the whole bill's item list. Null when the debt is a flat amount with no item
+     * breakdown (manual entry, or a non-itemized screenshot).
+     */
+    items: Array<{ name: string; amount: number }> | null;
   };
   history: {
     previousDebts: number;
@@ -99,33 +120,50 @@ export function emptyExpenseExtraction(): ExpenseExtraction {
     date: null,
     total: null,
     currency: null,
+    subtotal: null,
     tax: null,
     tip: null,
+    serviceCharge: null,
+    discount: null,
     category: null,
     paymentMethod: null,
     transactionReference: null,
     lineItems: [],
     visibleNames: [],
     description: null,
+    confidence: null,
   };
 }
 
 /**
- * The vision/OCR extraction step's own contract — deliberately flat and
- * minimal (7 fields, no nested arrays-of-objects) so the model has as little
- * structure to get wrong as possible, keeping the JSON small and reliable to
- * generate. Mapped onto the richer internal `ExpenseExtraction` immediately
- * after parsing (see `mapRawExtractionToExpense`); nothing downstream ever
- * sees this shape.
+ * The vision/OCR extraction step's own contract. Nested but still minimal —
+ * every field is either a primitive or an array of one flat item shape, so
+ * the model has little structure to get wrong. Mapped onto the richer
+ * internal `ExpenseExtraction` immediately after parsing (see
+ * `mapRawExtractionToExpense`); nothing downstream ever sees this shape.
  */
+export interface RawLineItem {
+  name: string | null;
+  quantity: number | null;
+  unit_price: number | null;
+  total: number | null;
+}
+
 export interface RawExpenseExtraction {
-  amount: number | null;
-  currency: string | null;
-  date: string | null;
   merchant_or_person: string | null;
+  date: string | null;
+  items: RawLineItem[];
+  subtotal: number | null;
+  tax: number | null;
+  service_charge: number | null;
+  discount: number | null;
+  grand_total: number | null;
+  currency: string | null;
   description: string | null;
   people: string[];
   raw_context: string | null;
+  /** 0-1: the model's own confidence in this whole extraction — low when the image was blurry, cropped, tilted, or otherwise hard to read. */
+  confidence: number | null;
 }
 
 const MAX_DESCRIPTION_LENGTH = 300;
@@ -138,15 +176,51 @@ function capDescription(text: string | null | undefined): string | null {
   return trimmed.length > MAX_DESCRIPTION_LENGTH ? `${trimmed.slice(0, MAX_DESCRIPTION_LENGTH).trim()}…` : trimmed;
 }
 
+let lineItemIdCounter = 0;
+function nextLineItemId(): string {
+  lineItemIdCounter += 1;
+  return `item_${Date.now().toString(36)}_${lineItemIdCounter}`;
+}
+
+/**
+ * Never invents a line total: uses the model's own `total` if given, derives
+ * quantity*unitPrice only when both are actually present, and otherwise
+ * leaves it at 0 with `uncertain: true` so the UI flags it for the user to
+ * fill in rather than silently treating a guess as a fact.
+ */
+function mapRawLineItem(raw: Partial<RawLineItem>): ExpenseLineItem {
+  const quantity = typeof raw.quantity === "number" ? raw.quantity : null;
+  const unitPrice = typeof raw.unit_price === "number" ? raw.unit_price : null;
+  const stated = typeof raw.total === "number" ? raw.total : null;
+  const derived = quantity !== null && unitPrice !== null ? quantity * unitPrice : null;
+  const price = stated ?? derived;
+  return {
+    id: nextLineItemId(),
+    name: raw.name?.trim() || "Unknown item",
+    quantity,
+    unitPrice,
+    price: price ?? 0,
+    uncertain: price === null,
+  };
+}
+
 export function mapRawExtractionToExpense(raw: Partial<RawExpenseExtraction>): ExpenseExtraction {
   return {
     ...emptyExpenseExtraction(),
     merchant: raw.merchant_or_person ?? null,
     date: raw.date ?? null,
-    total: typeof raw.amount === "number" ? raw.amount : null,
+    total: typeof raw.grand_total === "number" ? raw.grand_total : null,
     currency: raw.currency ?? null,
+    subtotal: typeof raw.subtotal === "number" ? raw.subtotal : null,
+    tax: typeof raw.tax === "number" ? raw.tax : null,
+    serviceCharge: typeof raw.service_charge === "number" ? raw.service_charge : null,
+    // Always stored as a positive magnitude regardless of how the model returned it (some receipts
+    // print it with a minus sign) — downstream math always does `tax + serviceCharge - discount`.
+    discount: typeof raw.discount === "number" ? Math.abs(raw.discount) : null,
+    lineItems: Array.isArray(raw.items) ? raw.items.map(mapRawLineItem) : [],
     visibleNames: Array.isArray(raw.people) ? raw.people : [],
     description: capDescription(raw.description) ?? capDescription(raw.raw_context),
+    confidence: typeof raw.confidence === "number" ? raw.confidence : null,
   };
 }
 
@@ -168,24 +242,52 @@ expense screenshot. Do not assume it is a traditional itemized bill — for exam
 screenshot may just show a payment to a person with no itemization at all, and a Splitwise \
 screenshot may already state the expense name and split. Interpret whatever is actually visible.
 
-Only report what is actually visible/legible. Never invent an amount, name, date, or any other \
-detail that isn't shown.
+When the image IS an itemized bill or receipt, extract EVERY line item separately — do not \
+collapse them into just a total. For each item, read its name, quantity, unit price (if shown), \
+and line total (if shown). Also separately read the subtotal, tax, service charge, discount, and \
+grand total whenever any of them are visibly stated — these are usually printed as distinct lines \
+near the bottom of a bill, not the same number. The grand total is just the final amount charged; \
+never assume it is what any one specific person owes — that split happens later, outside this step.
+
+Only report what is actually visible/legible. Never invent an item, name, quantity, price, amount, \
+date, or any other detail that isn't actually shown — a missing/unreadable field must be null (or \
+[] for a list), never a guess or a value backed into from the total. If you can state an item's \
+name but genuinely cannot read its price, still include the item with a null price rather than \
+omitting it or making one up.
+
+Set "confidence" (0-1) to reflect how legible the image was overall — high (0.8-1) for a clear, \
+well-lit, straight photo; lower (below 0.5) if the image is blurry, cropped, tilted, low-resolution, \
+or otherwise genuinely hard to read. A low confidence with partially-filled fields is a completely \
+valid, honest result — it is not a failure to correct for by guessing the rest.
 
 Respond with ONLY valid JSON. Do not include markdown code fences. Do not include any explanation \
 or prose before or after the JSON — output nothing but the JSON object itself. Use null for any \
-field you can't identify (or [] for the people list) — a field being missing is expected and fine. \
-If the image can't be understood at all, still return the same JSON shape with every field null/empty \
-rather than failing to produce valid JSON.`;
+field you can't identify (or [] for a list) — a field being missing is expected and fine. If the \
+image can't be understood at all, still return the same JSON shape with every field null/empty and \
+confidence near 0, rather than failing to produce valid JSON.`;
 
 export const EXPENSE_USER_PROMPT = `Extract whatever expense/payment information is actually visible and respond with ONLY this JSON shape, nothing else:
 {
-  "amount": number | null,
-  "currency": string | null,
-  "date": string | null,
   "merchant_or_person": string | null,
+  "date": string | null,
+  "items": [                          // [] if this isn't an itemized bill (e.g. a plain UPI payment screenshot) — never invented to fill this in
+    {
+      "name": string,
+      "quantity": number | null,      // null if not shown or not applicable
+      "unit_price": number | null,    // price per single unit, if shown separately from the line total
+      "total": number | null          // this item's own line total, if shown; null if only name/quantity could be read
+    }
+  ],
+  "subtotal": number | null,          // sum of items before tax/service/discount, ONLY if the bill states this distinctly
+  "tax": number | null,
+  "service_charge": number | null,
+  "discount": number | null,          // a POSITIVE amount that was subtracted from the bill (e.g. 50 for a ₹50 discount) — never negative, even if the receipt prints it with a minus sign
+  "grand_total": number | null,       // the final total actually charged/paid — NOT any one person's share
+  "currency": string | null,
   "description": string | null,       // a short (under ~10 words) natural summary of what this was for, e.g. "dinner at a restaurant" or "UPI payment to a friend" — NOT a transcription of the receipt
   "people": string[],
-  "raw_context": string | null        // only if there's a brief, genuinely useful note beyond description (e.g. a stated purpose/split); short, NEVER a dump of everything visible in the image
+  "raw_context": string | null,       // only if there's a brief, genuinely useful note beyond description (e.g. a stated purpose/split, or a legibility problem like "bottom-right corner is cut off"); short, NEVER a dump of everything visible in the image
+  "confidence": number                // 0-1, your overall confidence in this extraction
 }`;
 
 export const REMINDER_SYSTEM_PROMPT = `You are the message-writing component of "Unhinged Debt Collector", an app that helps a \
@@ -214,6 +316,11 @@ anything else not actually present in the context.
 If debt.desiredAction is set, the message must actually ask for that specific thing (e.g. "send it \
 today", "tell me when you'll pay") rather than a generic "pay me back". If debt.additionalContext is \
 set, treat it as true background the person supplied and weave it in naturally — never contradict it.
+
+If debt.items is set, this debt is that person's share of specific item(s) from a bill, not the \
+whole bill — you may naturally mention what it's actually for (e.g. "your share of the biryani and \
+the coke") using only the exact item names given, but never list every single one mechanically and \
+never invent an item that isn't in that list.
 
 Use history to make the message feel like it comes from an ongoing relationship, not a cold first \
 contact, when it isn't one:
@@ -266,9 +373,12 @@ export function buildReminderPrompt(params: {
   forcedTone?: Tone;
   previousMessage?: string;
 }): string {
-  const { history } = params.context;
+  const { history, debt } = params.context;
   const lines = [
     `Context:\n${JSON.stringify(params.context, null, 2)}`,
+    debt.items && debt.items.length > 0
+      ? `\nThis debt is specifically for: ${debt.items.map((i) => i.name).join(", ")}. You may reference this naturally, but the amount you're asking for is still exactly debt.amount, not the sum of these items' original bill prices (this may already be their discounted/adjusted share).`
+      : ``,
     history.previousReminders > 0
       ? `\nThis person has already been reminded ${history.previousReminders} time(s) before` +
         (history.lastReminderTone ? `, most recently in a "${history.lastReminderTone}" tone.` : ".")

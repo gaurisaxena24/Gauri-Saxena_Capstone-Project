@@ -59,6 +59,7 @@ export function buildReminderContext(params: {
       shareMode: debt.share_mode ?? "FULL",
       additionalContext: debt.additional_context,
       desiredAction: debt.desired_action,
+      items: debt.selected_items_json ? JSON.parse(debt.selected_items_json) : null,
     },
     history: {
       previousDebts: priorDebts.length,

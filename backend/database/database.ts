@@ -164,6 +164,19 @@ function getDb(): DatabaseSync {
   addColumnIfMissing(db, "expense_debts", "share_mode", "TEXT");
   addColumnIfMissing(db, "expense_debts", "additional_context", "TEXT");
   addColumnIfMissing(db, "expense_debts", "desired_action", "TEXT");
+  // Which specific bill item(s) (if any) this particular debt covers — e.g. [{"name":"Chicken
+  // Biryani","amount":450}]. Set only when the debt was built from an itemized bill via the
+  // item-selection UI; null for a flat manual amount or a non-itemized screenshot. Feeds the AI
+  // reminder ("your share of the biryani") without ever inventing items beyond what's stored here.
+  addColumnIfMissing(db, "expense_debts", "selected_items_json", "TEXT");
+
+  // Itemized-bill facts extracted alongside the existing tax/tip fields — kept distinct from
+  // `total` (the grand total) so tax/service/discount can be applied to a partial item selection
+  // rather than assumed to already be baked into whatever the person owes.
+  addColumnIfMissing(db, "expenses", "subtotal", "REAL");
+  addColumnIfMissing(db, "expenses", "service_charge", "REAL");
+  addColumnIfMissing(db, "expenses", "discount", "REAL");
+  addColumnIfMissing(db, "expenses", "extraction_confidence", "REAL");
 
   // Superseded by expenses/expense_debts (previous iteration of the web
   // flow, before "expense" replaced "bill" as the core object). Both were
@@ -341,8 +354,12 @@ export function verifyPersonByCode(
 export type ExpenseSource = "MANUAL" | "IMAGE";
 
 export interface ExpenseLineItem {
+  id: string;
   name: string;
+  quantity: number | null;
+  unitPrice: number | null;
   price: number;
+  uncertain: boolean;
 }
 
 export interface Expense {
@@ -352,8 +369,11 @@ export interface Expense {
   expense_date: string | null;
   total: number;
   currency: string | null;
+  subtotal: number | null;
   tax: number | null;
   tip: number | null;
+  service_charge: number | null;
+  discount: number | null;
   category: string | null;
   payment_method: string | null;
   transaction_reference: string | null;
@@ -362,6 +382,7 @@ export interface Expense {
   visible_names_json: string | null;
   image_path: string | null;
   raw_extraction_json: string | null;
+  extraction_confidence: number | null;
   created_at: string;
 }
 
@@ -371,8 +392,11 @@ export function createExpense(input: {
   expenseDate: string | null;
   total: number;
   currency: string | null;
+  subtotal?: number | null;
   tax: number | null;
   tip: number | null;
+  serviceCharge?: number | null;
+  discount?: number | null;
   category: string | null;
   paymentMethod: string | null;
   transactionReference: string | null;
@@ -381,15 +405,16 @@ export function createExpense(input: {
   visibleNames: string[];
   imagePath: string | null;
   rawExtraction: unknown;
+  confidence?: number | null;
 }): Expense {
   const database = getDb();
   const created_at = new Date().toISOString();
   const stmt = database.prepare(
     `INSERT INTO expenses
-       (source, merchant, expense_date, total, currency, tax, tip, category, payment_method,
-        transaction_reference, description, line_items_json, visible_names_json, image_path,
-        raw_extraction_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (source, merchant, expense_date, total, currency, subtotal, tax, tip, service_charge, discount,
+        category, payment_method, transaction_reference, description, line_items_json,
+        visible_names_json, image_path, raw_extraction_json, extraction_confidence, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const result = stmt.run(
     input.source,
@@ -397,8 +422,11 @@ export function createExpense(input: {
     input.expenseDate,
     input.total,
     input.currency,
+    input.subtotal ?? null,
     input.tax,
     input.tip,
+    input.serviceCharge ?? null,
+    input.discount ?? null,
     input.category,
     input.paymentMethod,
     input.transactionReference,
@@ -407,6 +435,7 @@ export function createExpense(input: {
     JSON.stringify(input.visibleNames),
     input.imagePath,
     JSON.stringify(input.rawExtraction ?? null),
+    input.confidence ?? null,
     created_at
   );
   return getExpense(Number(result.lastInsertRowid))!;
@@ -432,8 +461,11 @@ export function updateExpense(
     expenseDate: string | null;
     total: number;
     currency: string | null;
+    subtotal: number | null;
     tax: number | null;
     tip: number | null;
+    serviceCharge: number | null;
+    discount: number | null;
     category: string | null;
     paymentMethod: string | null;
     description: string | null;
@@ -449,8 +481,11 @@ export function updateExpense(
     expense_date: patch.expenseDate !== undefined ? patch.expenseDate : current.expense_date,
     total: patch.total !== undefined ? patch.total : current.total,
     currency: patch.currency !== undefined ? patch.currency : current.currency,
+    subtotal: patch.subtotal !== undefined ? patch.subtotal : current.subtotal,
     tax: patch.tax !== undefined ? patch.tax : current.tax,
     tip: patch.tip !== undefined ? patch.tip : current.tip,
+    service_charge: patch.serviceCharge !== undefined ? patch.serviceCharge : current.service_charge,
+    discount: patch.discount !== undefined ? patch.discount : current.discount,
     category: patch.category !== undefined ? patch.category : current.category,
     payment_method: patch.paymentMethod !== undefined ? patch.paymentMethod : current.payment_method,
     description: patch.description !== undefined ? patch.description : current.description,
@@ -459,16 +494,19 @@ export function updateExpense(
 
   database
     .prepare(
-      `UPDATE expenses SET merchant = ?, expense_date = ?, total = ?, currency = ?, tax = ?, tip = ?,
-         category = ?, payment_method = ?, description = ?, line_items_json = ? WHERE id = ?`
+      `UPDATE expenses SET merchant = ?, expense_date = ?, total = ?, currency = ?, subtotal = ?, tax = ?, tip = ?,
+         service_charge = ?, discount = ?, category = ?, payment_method = ?, description = ?, line_items_json = ? WHERE id = ?`
     )
     .run(
       next.merchant,
       next.expense_date,
       next.total,
       next.currency,
+      next.subtotal,
       next.tax,
       next.tip,
+      next.service_charge,
+      next.discount,
       next.category,
       next.payment_method,
       next.description,
@@ -503,6 +541,7 @@ export interface ExpenseDebt {
   share_mode: ShareModeValue | null;
   additional_context: string | null;
   desired_action: string | null;
+  selected_items_json: string | null;
   created_at: string;
   paid_at: string | null;
 }
@@ -516,13 +555,14 @@ export function createExpenseDebt(input: {
   additionalContext: string | null;
   desiredAction: string | null;
   contextJson: unknown;
+  selectedItems?: Array<{ name: string; amount: number }> | null;
 }): ExpenseDebt {
   const database = getDb();
   const created_at = new Date().toISOString();
   const stmt = database.prepare(
     `INSERT INTO expense_debts
-       (expense_id, person_id, amount, currency, status, context_json, share_mode, additional_context, desired_action, created_at)
-     VALUES (?, ?, ?, ?, 'UNPAID', ?, ?, ?, ?, ?)`
+       (expense_id, person_id, amount, currency, status, context_json, share_mode, additional_context, desired_action, selected_items_json, created_at)
+     VALUES (?, ?, ?, ?, 'UNPAID', ?, ?, ?, ?, ?, ?)`
   );
   const result = stmt.run(
     input.expenseId,
@@ -533,6 +573,7 @@ export function createExpenseDebt(input: {
     input.shareMode,
     input.additionalContext,
     input.desiredAction,
+    input.selectedItems && input.selectedItems.length > 0 ? JSON.stringify(input.selectedItems) : null,
     created_at
   );
   return getExpenseDebt(Number(result.lastInsertRowid))!;

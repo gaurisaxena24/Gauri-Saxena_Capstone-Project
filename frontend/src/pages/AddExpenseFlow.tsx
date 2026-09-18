@@ -13,6 +13,7 @@ import {
   updateExpense,
   type DebtSummary,
   type Expense,
+  type ExpenseLineItem,
   type PersonSummary,
   type ReminderContext,
   type ShareMode,
@@ -21,7 +22,18 @@ import { formatCurrency } from "../lib/format";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { ToneBadge } from "../components/ToneBadge";
 
-type Step = "choice" | "upload" | "manual" | "extracted" | "person" | "amount" | "message" | "done";
+type Step = "choice" | "upload" | "manual" | "extracted" | "person" | "items" | "amount" | "message" | "done";
+
+type TaxHandling = "proportional" | "excluded" | "manual";
+type SplitMode = "ENTIRE" | "HALF" | "PERCENT" | "CUSTOM";
+
+function newLineItemId(): string {
+  return `local_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function itemLineTotal(item: ExpenseLineItem): number {
+  return Number.isFinite(item.price) ? item.price : 0;
+}
 
 const TONES = ["Casual", "Funny", "Passive-Aggressive", "Unhinged"] as const;
 const PAYMENT_METHODS = ["UPI", "Google Pay", "Cash", "Card", "Bank Transfer", "Other"];
@@ -36,7 +48,12 @@ const DESIRED_ACTIONS = [
 function StepIndicator({ current }: { current: Step }) {
   const order: Step[] = ["choice", "person", "amount", "message"];
   const labels: Record<string, string> = { choice: "Expense", person: "Person", amount: "Amount", message: "Reminder" };
-  const effective = current === "upload" || current === "manual" || current === "extracted" ? "choice" : current;
+  const effective =
+    current === "upload" || current === "manual" || current === "extracted"
+      ? "choice"
+      : current === "items"
+        ? "amount"
+        : current;
   const currentIndex = order.indexOf(effective);
   return (
     <div className="mb-8 flex items-center gap-2">
@@ -122,9 +139,20 @@ export function AddExpenseFlow() {
   const [personError, setPersonError] = useState<string | null>(null);
   const [savingPerson, setSavingPerson] = useState(false);
 
-  // Amount
+  // Item selection (image-derived expenses only)
+  const [editableItems, setEditableItems] = useState<ExpenseLineItem[]>([]);
+  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
+  const [taxHandling, setTaxHandling] = useState<TaxHandling>("proportional");
+  const [manualTaxAdjustment, setManualTaxAdjustment] = useState("");
+  const [itemsError, setItemsError] = useState<string | null>(null);
+  const [usingItemSelection, setUsingItemSelection] = useState(false);
+  const [resolvedSelectedTotal, setResolvedSelectedTotal] = useState(0);
+
+  // Amount / split
   const [mode, setMode] = useState<ShareMode | null>(null);
   const [customAmount, setCustomAmount] = useState("");
+  const [splitMode, setSplitMode] = useState<SplitMode | null>(null);
+  const [splitPercent, setSplitPercent] = useState("");
   const [confirmingAmount, setConfirmingAmount] = useState(false);
   const [amountError, setAmountError] = useState<string | null>(null);
 
@@ -215,6 +243,21 @@ export function AddExpenseFlow() {
     setStep("person");
   }
 
+  /** After picking who owes: itemized bills go to item selection first, everything else goes straight to the amount step. */
+  function goToAmountPhase() {
+    if (expense?.source === "IMAGE" && expense.lineItems.length > 0) {
+      setEditableItems(expense.lineItems);
+      setSelectedItemIds(new Set(expense.lineItems.map((i) => i.id)));
+      setTaxHandling("proportional");
+      setManualTaxAdjustment("");
+      setItemsError(null);
+      setStep("items");
+    } else {
+      setUsingItemSelection(false);
+      setStep("amount");
+    }
+  }
+
   async function confirmPerson() {
     setPersonError(null);
     if (addingNewPerson) {
@@ -232,7 +275,7 @@ export function AddExpenseFlow() {
           notes: newPersonDescription.trim() || undefined,
         });
         setSelectedPersonId(person.id);
-        setStep("amount");
+        goToAmountPhase();
       } catch (err) {
         setPersonError(err instanceof Error ? err.message : "Couldn't save that person.");
       } finally {
@@ -245,17 +288,118 @@ export function AddExpenseFlow() {
       setPersonError("Select someone first.");
       return;
     }
+    goToAmountPhase();
+  }
+
+  // ---- Item selection (image-derived expenses) ----
+
+  function toggleItem(id: string) {
+    setSelectedItemIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function updateItem(id: string, patch: Partial<Pick<ExpenseLineItem, "name" | "quantity" | "unitPrice" | "price">>) {
+    setEditableItems((prev) =>
+      prev.map((item) => {
+        if (item.id !== id) return item;
+        const next = { ...item, ...patch, uncertain: false };
+        if ((patch.quantity !== undefined || patch.unitPrice !== undefined) && patch.price === undefined) {
+          const qty = patch.quantity !== undefined ? patch.quantity : item.quantity;
+          const unit = patch.unitPrice !== undefined ? patch.unitPrice : item.unitPrice;
+          if (qty !== null && unit !== null) next.price = qty * unit;
+        }
+        return next;
+      })
+    );
+  }
+
+  function deleteItem(id: string) {
+    setEditableItems((prev) => prev.filter((item) => item.id !== id));
+    setSelectedItemIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }
+
+  function addItem() {
+    const id = newLineItemId();
+    setEditableItems((prev) => [...prev, { id, name: "", quantity: 1, unitPrice: null, price: 0, uncertain: false }]);
+    setSelectedItemIds((prev) => new Set(prev).add(id));
+  }
+
+  const checkedItems = editableItems.filter((i) => selectedItemIds.has(i.id));
+  const selectedItemsTotal = checkedItems.reduce((sum, i) => sum + itemLineTotal(i), 0);
+  const allItemsTotal = editableItems.reduce((sum, i) => sum + itemLineTotal(i), 0);
+  const netExtraCharges = (expense?.tax ?? 0) + (expense?.serviceCharge ?? 0) - (expense?.discount ?? 0);
+  const hasExtraCharges = netExtraCharges !== 0;
+  const proportionalAdjustment =
+    allItemsTotal > 0 ? (selectedItemsTotal / allItemsTotal) * netExtraCharges : 0;
+  const taxAdjustment =
+    taxHandling === "proportional"
+      ? proportionalAdjustment
+      : taxHandling === "excluded"
+        ? 0
+        : Number(manualTaxAdjustment || 0);
+  const previewAdjustedTotal = selectedItemsTotal + (hasExtraCharges ? taxAdjustment : 0);
+
+  function useWholeBillInstead() {
+    setUsingItemSelection(false);
     setStep("amount");
   }
 
-  const computedAmount =
-    mode === "FULL" ? (expense?.total ?? 0) : mode === "HALF" ? (expense?.total ?? 0) / 2 : mode === "CUSTOM" ? Number(customAmount) : null;
+  function confirmItems() {
+    if (checkedItems.length === 0) {
+      setItemsError("Select at least one item, add one manually, or use the whole bill amount instead.");
+      return;
+    }
+    setItemsError(null);
+    setResolvedSelectedTotal(previewAdjustedTotal);
+    setUsingItemSelection(true);
+    setMode(null);
+    setSplitMode(null);
+    setStep("amount");
+  }
 
-  const customAmountInvalid = mode === "CUSTOM" && (!customAmount || !Number.isFinite(Number(customAmount)) || Number(customAmount) <= 0);
+  // ---- Amount / split ----
+
+  const itemizedBase = resolvedSelectedTotal;
+  const itemizedComputedAmount =
+    splitMode === "ENTIRE"
+      ? itemizedBase
+      : splitMode === "HALF"
+        ? itemizedBase / 2
+        : splitMode === "PERCENT"
+          ? (itemizedBase * Number(splitPercent || 0)) / 100
+          : splitMode === "CUSTOM"
+            ? Number(customAmount)
+            : null;
+
+  const computedAmount = usingItemSelection
+    ? itemizedComputedAmount
+    : mode === "FULL"
+      ? (expense?.total ?? 0)
+      : mode === "HALF"
+        ? (expense?.total ?? 0) / 2
+        : mode === "CUSTOM"
+          ? Number(customAmount)
+          : null;
+
+  const customAmountInvalid = usingItemSelection
+    ? splitMode === "CUSTOM" && (!customAmount || !Number.isFinite(Number(customAmount)) || Number(customAmount) <= 0)
+    : mode === "CUSTOM" && (!customAmount || !Number.isFinite(Number(customAmount)) || Number(customAmount) <= 0);
+
+  const splitPercentInvalid =
+    usingItemSelection && splitMode === "PERCENT" && (!splitPercent || !Number.isFinite(Number(splitPercent)) || Number(splitPercent) <= 0);
 
   async function confirmAmount() {
-    if (!expense || !selectedPersonId || !mode) return;
-    if (customAmountInvalid) {
+    if (!expense || !selectedPersonId) return;
+    if (usingItemSelection ? !splitMode : !mode) return;
+    if (customAmountInvalid || splitPercentInvalid) {
       setAmountError("Enter a valid amount greater than 0.");
       return;
     }
@@ -267,8 +411,11 @@ export function AddExpenseFlow() {
       const created = await createDebt({
         expenseId: expense.id,
         personId: selectedPersonId,
-        mode,
-        customAmount: mode === "CUSTOM" ? Number(customAmount) : undefined,
+        mode: usingItemSelection ? "CUSTOM" : (mode as ShareMode),
+        customAmount: usingItemSelection ? Number(computedAmount) : mode === "CUSTOM" ? Number(customAmount) : undefined,
+        selectedItems: usingItemSelection
+          ? checkedItems.map((i) => ({ name: i.name || "Item", amount: itemLineTotal(i) }))
+          : undefined,
         additionalContext: additionalContext.trim() || undefined,
         desiredAction: resolvedDesiredAction || undefined,
       });
@@ -617,32 +764,215 @@ export function AddExpenseFlow() {
         </div>
       )}
 
-      {step === "amount" && expense && (
+      {step === "items" && expense && (
         <div>
-          <h1 className="font-display mb-2 text-2xl font-bold text-ink">How much do they owe?</h1>
-          <p className="mb-6 text-sm text-ink-soft">Expense total was {formatCurrency(expense.total)}.</p>
+          <h1 className="font-display mb-2 text-2xl font-bold text-ink">What's their share made of?</h1>
+          <p className="mb-6 text-sm text-ink-soft">
+            Check the items {people.find((p) => p.id === selectedPersonId)?.name ?? "this person"} actually owes for. Fix
+            anything that's wrong — OCR/vision isn't perfect.
+          </p>
 
-          <div className="grid grid-cols-3 gap-3">
-            {(["FULL", "HALF", "CUSTOM"] as ShareMode[]).map((m) => (
-              <button
-                key={m}
-                onClick={() => setMode(m)}
-                className={`rounded-xl border p-4 text-center font-medium capitalize transition-colors ${
-                  mode === m ? "border-ink bg-ink/[0.03] text-ink" : "border-border bg-card text-ink-soft hover:border-ink/30"
+          {expense.confidence !== null && expense.confidence < 0.5 && (
+            <div className="mb-4">
+              <ErrorBanner message="This image was hard to read clearly — double-check the items below and fix or add anything that's missing." />
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {editableItems.map((item) => (
+              <div
+                key={item.id}
+                className={`flex items-center gap-3 rounded-xl border p-3 ${
+                  item.uncertain ? "border-amber-400 bg-amber-50/40" : "border-border bg-card"
                 }`}
               >
-                {m === "FULL" ? "Full amount" : m.toLowerCase()}
-              </button>
+                <input
+                  type="checkbox"
+                  checked={selectedItemIds.has(item.id)}
+                  onChange={() => toggleItem(item.id)}
+                  className="h-4 w-4 shrink-0"
+                />
+                <input
+                  value={item.name}
+                  onChange={(e) => updateItem(item.id, { name: e.target.value })}
+                  placeholder="Item name"
+                  className="min-w-0 flex-1 rounded-md border border-border bg-paper px-2 py-1 text-sm text-ink outline-none focus:border-ink"
+                />
+                <input
+                  type="number"
+                  value={item.quantity ?? ""}
+                  onChange={(e) => updateItem(item.id, { quantity: e.target.value ? Number(e.target.value) : null })}
+                  placeholder="qty"
+                  className="w-14 rounded-md border border-border bg-paper px-2 py-1 text-sm text-ink outline-none focus:border-ink"
+                />
+                <span className="text-xs text-ink-faint">×</span>
+                <input
+                  type="number"
+                  value={item.unitPrice ?? ""}
+                  onChange={(e) => updateItem(item.id, { unitPrice: e.target.value ? Number(e.target.value) : null })}
+                  placeholder="unit ₹"
+                  className="w-20 rounded-md border border-border bg-paper px-2 py-1 text-sm text-ink outline-none focus:border-ink"
+                />
+                <span className="text-xs text-ink-faint">=</span>
+                <input
+                  type="number"
+                  value={item.price}
+                  onChange={(e) => updateItem(item.id, { price: Number(e.target.value) || 0 })}
+                  className="w-20 rounded-md border border-border bg-paper px-2 py-1 text-sm font-medium text-ink outline-none focus:border-ink"
+                />
+                <button
+                  onClick={() => deleteItem(item.id)}
+                  className="shrink-0 text-ink-faint hover:text-red-500"
+                  aria-label="Delete item"
+                >
+                  ×
+                </button>
+              </div>
             ))}
           </div>
 
-          {mode === "CUSTOM" && (
+          <button
+            onClick={addItem}
+            className="mt-3 w-full rounded-xl border border-dashed border-border p-3 text-left text-sm font-medium text-ink-soft hover:border-ink/30 hover:text-ink"
+          >
+            + Add item
+          </button>
+
+          <div className="mt-5 flex items-center justify-between rounded-xl border border-border bg-card p-4 text-sm">
+            <span className="text-ink-soft">Selected items total</span>
+            <span className="font-display text-lg font-bold text-ink">{formatCurrency(selectedItemsTotal)}</span>
+          </div>
+          <div className="mt-2 flex items-center justify-between px-1 text-xs text-ink-faint">
+            <span>Bill total</span>
+            <span>{formatCurrency(expense.total)}</span>
+          </div>
+
+          {hasExtraCharges && (
+            <div className="mt-4 space-y-3 rounded-2xl border border-border bg-card p-5">
+              <p className="text-sm font-medium text-ink">
+                This bill has tax/service/discount ({formatCurrency(netExtraCharges)} net) — how should it apply to the
+                selected items?
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {(
+                  [
+                    ["proportional", "Included proportionally"],
+                    ["excluded", "Excluded"],
+                    ["manual", "Manually adjust"],
+                  ] as Array<[TaxHandling, string]>
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setTaxHandling(value)}
+                    className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                      taxHandling === value ? "bg-ink text-paper" : "bg-ink/5 text-ink-soft hover:bg-ink/10"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {taxHandling === "manual" && (
+                <Field
+                  label="Adjustment amount (+ to add, - to subtract)"
+                  value={manualTaxAdjustment}
+                  onChange={setManualTaxAdjustment}
+                  type="number"
+                />
+              )}
+              <p className="text-xs text-ink-faint">
+                Selected items ({formatCurrency(selectedItemsTotal)}) {taxAdjustment >= 0 ? "+" : "-"}{" "}
+                {formatCurrency(Math.abs(taxAdjustment))} = {formatCurrency(previewAdjustedTotal)}
+              </p>
+            </div>
+          )}
+
+          {itemsError && (
+            <div className="mt-4">
+              <ErrorBanner message={itemsError} />
+            </div>
+          )}
+
+          <div className="mt-6 flex flex-wrap items-center gap-3">
+            <button
+              onClick={confirmItems}
+              className="rounded-full bg-ink px-6 py-2.5 text-sm font-semibold text-paper"
+            >
+              Continue
+            </button>
+            <button onClick={useWholeBillInstead} className="text-sm font-medium text-ink-soft hover:text-ink">
+              Use whole bill amount instead
+            </button>
+          </div>
+        </div>
+      )}
+
+      {step === "amount" && expense && (
+        <div>
+          <h1 className="font-display mb-2 text-2xl font-bold text-ink">How much do they owe?</h1>
+          <p className="mb-6 text-sm text-ink-soft">
+            {usingItemSelection
+              ? `Selected items come to ${formatCurrency(resolvedSelectedTotal)}.`
+              : `Expense total was ${formatCurrency(expense.total)}.`}
+          </p>
+
+          {usingItemSelection ? (
+            <>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {(
+                  [
+                    ["ENTIRE", "Entire selected amount"],
+                    ["HALF", "Half"],
+                    ["PERCENT", "Custom %"],
+                    ["CUSTOM", "Custom amount"],
+                  ] as Array<[SplitMode, string]>
+                ).map(([m, label]) => (
+                  <button
+                    key={m}
+                    onClick={() => setSplitMode(m)}
+                    className={`rounded-xl border p-4 text-center text-sm font-medium transition-colors ${
+                      splitMode === m ? "border-ink bg-ink/[0.03] text-ink" : "border-border bg-card text-ink-soft hover:border-ink/30"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {splitMode === "PERCENT" && (
+                <div className="mt-4">
+                  <Field label="Percentage" value={splitPercent} onChange={setSplitPercent} type="number" placeholder="50" />
+                </div>
+              )}
+              {splitMode === "CUSTOM" && (
+                <div className="mt-4">
+                  <Field label="Custom amount" value={customAmount} onChange={setCustomAmount} type="number" />
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="grid grid-cols-3 gap-3">
+              {(["FULL", "HALF", "CUSTOM"] as ShareMode[]).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setMode(m)}
+                  className={`rounded-xl border p-4 text-center font-medium capitalize transition-colors ${
+                    mode === m ? "border-ink bg-ink/[0.03] text-ink" : "border-border bg-card text-ink-soft hover:border-ink/30"
+                  }`}
+                >
+                  {m === "FULL" ? "Full amount" : m.toLowerCase()}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {!usingItemSelection && mode === "CUSTOM" && (
             <div className="mt-4">
               <Field label="Custom amount" value={customAmount} onChange={setCustomAmount} type="number" />
             </div>
           )}
 
-          {mode && computedAmount !== null && !customAmountInvalid && (
+          {(usingItemSelection ? splitMode : mode) && computedAmount !== null && !customAmountInvalid && !splitPercentInvalid && (
             <p className="mt-5 font-display text-xl font-bold text-ink">
               {people.find((p) => p.id === selectedPersonId)?.name ?? "This person"} owes {formatCurrency(computedAmount)}
             </p>
@@ -695,7 +1025,7 @@ export function AddExpenseFlow() {
 
           <button
             onClick={confirmAmount}
-            disabled={!mode || customAmountInvalid || confirmingAmount}
+            disabled={(usingItemSelection ? !splitMode : !mode) || customAmountInvalid || splitPercentInvalid || confirmingAmount}
             className="mt-6 rounded-full bg-ink px-6 py-2.5 text-sm font-semibold text-paper disabled:opacity-40"
           >
             {confirmingAmount ? "Confirming…" : "Confirm"}
@@ -729,6 +1059,11 @@ export function AddExpenseFlow() {
                   <p className="font-medium text-ink">{formatCurrency(debt.amount)}</p>
                 </div>
               </div>
+              {debt.selectedItems && debt.selectedItems.length > 0 && (
+                <p className="mb-3 text-xs text-ink-faint">
+                  For: {debt.selectedItems.map((i) => i.name).join(", ")}
+                </p>
+              )}
               <div className="mb-3 flex items-center justify-between">
                 <ToneBadge tone={debt.tone} />
                 {debt.messageEdited && <span className="text-xs text-ink-faint">edited by you</span>}

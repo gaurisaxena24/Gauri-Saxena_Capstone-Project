@@ -86,6 +86,12 @@ export function DebtDetail() {
               )}
               {debt.context.debt.desiredAction && <Row label="Requested action" value={debt.context.debt.desiredAction} />}
             </dl>
+            {debt.context.debt.items && debt.context.debt.items.length > 0 && (
+              <div className="mt-3 border-t border-border pt-3 text-sm text-ink-soft">
+                <span className="text-ink-faint">Covers items: </span>
+                {debt.context.debt.items.map((i) => `${i.name} (${formatCurrency(i.amount)})`).join(", ")}
+              </div>
+            )}
             {debt.context.history.otherOpenDebts.length > 0 && (
               <div className="mt-3 border-t border-border pt-3 text-sm text-ink-soft">
                 <span className="text-ink-faint">Also owes for: </span>
