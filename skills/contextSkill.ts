@@ -16,6 +16,19 @@ function daysBetween(from: Date, to: Date): number {
   return Math.max(0, Math.round((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24)));
 }
 
+const MAX_REASON_LENGTH = 60;
+
+/**
+ * `expense.description` is meant to be a short human summary, but some older/OCR-derived rows
+ * ended up storing a raw multi-line receipt dump instead. This is the AI prompt's own reason
+ * string, not a UI display field with its own cap — defensively short regardless of how dirty the
+ * underlying data is, so a stray receipt dump never floods the model's context.
+ */
+function shortReason(text: string): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > MAX_REASON_LENGTH ? `${oneLine.slice(0, MAX_REASON_LENGTH).trim()}…` : oneLine;
+}
+
 export function buildReminderContext(params: {
   person: Person;
   expense: Expense;
@@ -37,7 +50,9 @@ export function buildReminderContext(params: {
       const otherExpense = getExpenseById(d.expense_id);
       return {
         amount: d.amount,
-        reason: otherExpense?.description ?? otherExpense?.merchant ?? otherExpense?.category ?? "a shared expense",
+        reason: shortReason(
+          otherExpense?.description ?? otherExpense?.merchant ?? otherExpense?.category ?? "a shared expense"
+        ),
         daysOutstanding: daysBetween(new Date(d.created_at), new Date()),
       };
     });
@@ -55,7 +70,7 @@ export function buildReminderContext(params: {
       currency: debt.currency ?? expense.currency ?? "INR",
       date: expense.expense_date,
       category: expense.category,
-      reason: expense.description ?? expense.merchant ?? expense.category ?? "a shared expense",
+      reason: shortReason(expense.description ?? expense.merchant ?? expense.category ?? "a shared expense"),
       shareMode: debt.share_mode ?? "FULL",
       additionalContext: debt.additional_context,
       desiredAction: debt.desired_action,
