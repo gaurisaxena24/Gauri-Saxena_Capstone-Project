@@ -261,6 +261,9 @@ export const sendDebtViaTelegram = (debtId: number) =>
 
 export const markDebtPaid = (debtId: number) => request<DebtSummary>(`/debts/${debtId}/paid`, { method: "POST" });
 
+/** Removes this debt ("send request") only — never the person or expense it references. */
+export const removeDebt = (debtId: number) => request<void>(`/debts/${debtId}`, { method: "DELETE" });
+
 export interface DebtDetail extends DebtSummary {
   context: ReminderContext | null;
   expense: Expense | null;

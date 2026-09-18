@@ -184,3 +184,8 @@ export async function sendReminder(debt: ExpenseDebt, person: Person) {
 export function markDebtPaid(debtId: number) {
   return debtAgent.markPaid(debtId, "PAID");
 }
+
+/** Removes a debt ("send request") only — the person and expense it references are always left untouched. */
+export function removeDebt(debtId: number): boolean {
+  return debtAgent.removeDebt(debtId);
+}

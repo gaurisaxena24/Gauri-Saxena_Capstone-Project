@@ -8,6 +8,7 @@
 import {
   createExpense,
   createExpenseDebt,
+  deleteExpenseDebt,
   getDebtsForExpense,
   getDebtsForPerson,
   getExpense,
@@ -124,4 +125,9 @@ export function saveDraftMessage(
 
 export function markPaid(debtId: number, status: DebtStatus = "PAID"): ExpenseDebt | undefined {
   return setDebtStatus(debtId, status);
+}
+
+/** Removes a debt ("send request") and its own send-history only — never the person or expense it references. */
+export function removeDebt(debtId: number): boolean {
+  return deleteExpenseDebt(debtId);
 }

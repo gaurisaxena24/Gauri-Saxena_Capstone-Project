@@ -124,6 +124,10 @@ export function AddExpenseFlow() {
   const [extractError, setExtractError] = useState<{ message: string; aiNotConfigured: boolean } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastFileRef = useRef<File | null>(null);
+  // A synchronous guard against a fast double-click firing two sends before React re-renders the
+  // disabled button — `sending` state alone can race, since both clicks can read it as `false`
+  // within the same tick.
+  const sendingRef = useRef(false);
 
   const [expense, setExpense] = useState<Expense | null>(null);
 
@@ -164,12 +168,18 @@ export function AddExpenseFlow() {
   // Debt + message
   const [debt, setDebt] = useState<(DebtSummary & { context?: ReminderContext }) | null>(null);
   const [generating, setGenerating] = useState(false);
-  const [messageError, setMessageError] = useState<{ message: string; notVerified: boolean } | null>(null);
+  // Kept strictly separate from sendError: a failed generation must only ever offer to retry
+  // generation, never to send whatever (possibly stale, possibly nonexistent) message happens to
+  // be in `debt` — that conflation was the exact cause of "Retry" sometimes sending unintentionally.
+  const [generationError, setGenerationError] = useState<string | null>(null);
+  const [lastGenerateArgs, setLastGenerateArgs] = useState<{ tone?: string; regenerate: boolean } | null>(null);
   const [reasoning, setReasoning] = useState<string | null>(null);
   const [editingMessage, setEditingMessage] = useState(false);
   const [draftText, setDraftText] = useState("");
   const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<{ message: string; notVerified: boolean } | null>(null);
   const [sendResult, setSendResult] = useState<{ note: string } | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
 
   useEffect(() => {
     if (step === "person") {
@@ -430,44 +440,54 @@ export function AddExpenseFlow() {
   }
 
   async function runGenerate(debtId: number, tone: string | undefined, regenerate: boolean) {
+    setLastGenerateArgs({ tone, regenerate });
     setGenerating(true);
-    setMessageError(null);
+    setGenerationError(null);
     try {
       const result = await generateMessage(debtId, { tone, regenerate });
       setDebt((prev) => (prev ? { ...prev, message: result.message, tone: result.tone } : prev));
       setReasoning(result.reasoning || null);
       setDraftText(result.message ?? "");
     } catch (err) {
-      const message = err instanceof ApiError ? err.message : "Message generation failed. Try again.";
-      setMessageError({ message, notVerified: false });
+      const message = err instanceof ApiError ? err.message : "Couldn't generate the message. Please try again.";
+      setGenerationError(message);
     } finally {
       setGenerating(false);
     }
   }
 
+  /** The ONLY thing "Try Again" on a failed generation does — replays the exact same generate call. Never sends. */
+  function retryGeneration() {
+    if (!debt || !lastGenerateArgs) return;
+    runGenerate(debt.id, lastGenerateArgs.tone, lastGenerateArgs.regenerate);
+  }
+
   async function saveEditedMessage() {
     if (!debt) return;
+    setEditError(null);
     try {
       const updated = await editMessage(debt.id, draftText);
       setDebt(updated);
       setEditingMessage(false);
     } catch (err) {
-      setMessageError({ message: err instanceof Error ? err.message : "Couldn't save your edit.", notVerified: false });
+      setEditError(err instanceof Error ? err.message : "Couldn't save your edit.");
     }
   }
 
   async function handleSend() {
-    if (!debt) return;
+    if (!debt || sendingRef.current) return;
+    sendingRef.current = true;
     setSending(true);
-    setMessageError(null);
+    setSendError(null);
     try {
       const result = await sendDebtViaTelegram(debt.id);
       setSendResult(result);
       setStep("done");
     } catch (err) {
       const notVerified = err instanceof ApiError && err.notVerified;
-      setMessageError({ message: err instanceof Error ? err.message : "Couldn't send via Telegram.", notVerified });
+      setSendError({ message: err instanceof Error ? err.message : "Couldn't send the message.", notVerified });
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   }
@@ -1042,6 +1062,20 @@ export function AddExpenseFlow() {
 
           {generating && !debt.message && <p className="text-sm text-ink-soft">Writing a reminder…</p>}
 
+          {!debt.message && !generating && generationError && (
+            <div className="rounded-2xl border border-border bg-card p-6 text-center">
+              <p className="font-medium text-ink">Couldn't generate the message.</p>
+              <p className="mt-1 text-sm text-ink-soft">{generationError}</p>
+              <button
+                type="button"
+                onClick={retryGeneration}
+                className="mt-4 rounded-full bg-ink px-5 py-1.5 text-sm font-semibold text-paper"
+              >
+                Try Again
+              </button>
+            </div>
+          )}
+
           {debt.message && !editingMessage && (
             <div className="rounded-2xl border border-border bg-card p-6">
               <div className="mb-4 flex items-center justify-between border-b border-border pb-4 text-sm">
@@ -1081,11 +1115,13 @@ export function AddExpenseFlow() {
                 rows={4}
                 className="w-full resize-none rounded-lg border border-border bg-paper p-3 text-ink outline-none focus:border-ink"
               />
+              {editError && <p className="mt-2 text-sm text-[var(--color-danger)]">{editError}</p>}
               <div className="mt-3 flex gap-2">
-                <button onClick={saveEditedMessage} className="rounded-full bg-ink px-4 py-1.5 text-sm font-semibold text-paper">
+                <button type="button" onClick={saveEditedMessage} className="rounded-full bg-ink px-4 py-1.5 text-sm font-semibold text-paper">
                   Save edit
                 </button>
                 <button
+                  type="button"
                   onClick={() => {
                     setEditingMessage(false);
                     setDraftText(debt.message ?? "");
@@ -1098,12 +1134,21 @@ export function AddExpenseFlow() {
             </div>
           )}
 
-          {messageError && (
+          {/* Generation failure: "Try Again" only ever re-runs generation — never sends. Shown even
+              if an older message is still visible below, so it's never mistaken for a send error. */}
+          {generationError && debt.message && (
+            <div className="mt-4">
+              <ErrorBanner message={`Couldn't generate a new message: ${generationError}`} onRetry={retryGeneration} retryLabel="Try Again" />
+            </div>
+          )}
+
+          {/* Send failure: "Retry Send" only ever re-sends the SAME already-approved message — never regenerates. */}
+          {sendError && (
             <div className="mt-4 space-y-2">
-              <ErrorBanner message={messageError.message} onRetry={handleSend} />
-              {messageError.notVerified && (
+              <ErrorBanner message={sendError.message} onRetry={handleSend} retryLabel="Retry Send" />
+              {sendError.notVerified && (
                 <p className="text-xs text-ink-faint">
-                  Once they've messaged the bot, click "Send via Telegram" again — no need to redo anything above.
+                  Once they've messaged the bot, click "Retry Send" again — no need to redo anything above.
                 </p>
               )}
             </div>
@@ -1112,6 +1157,7 @@ export function AddExpenseFlow() {
           {debt.message && !editingMessage && (
             <div className="mt-5 flex flex-wrap items-center gap-2">
               <button
+                type="button"
                 onClick={() => runGenerate(debt.id, debt.tone ?? undefined, true)}
                 disabled={generating}
                 className="rounded-full border border-border px-4 py-1.5 text-sm font-medium text-ink hover:border-ink/40 disabled:opacity-40"
@@ -1121,6 +1167,7 @@ export function AddExpenseFlow() {
               <div className="flex items-center gap-1">
                 {TONES.map((tone) => (
                   <button
+                    type="button"
                     key={tone}
                     onClick={() => runGenerate(debt.id, tone, false)}
                     disabled={generating}
@@ -1133,6 +1180,7 @@ export function AddExpenseFlow() {
                 ))}
               </div>
               <button
+                type="button"
                 onClick={() => {
                   setDraftText(debt.message ?? "");
                   setEditingMessage(true);
@@ -1142,6 +1190,7 @@ export function AddExpenseFlow() {
                 Edit
               </button>
               <button
+                type="button"
                 onClick={handleSend}
                 disabled={sending}
                 className="ml-auto rounded-full bg-accent px-5 py-1.5 text-sm font-semibold text-white disabled:opacity-40"
