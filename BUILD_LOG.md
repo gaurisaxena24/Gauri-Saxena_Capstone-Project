@@ -472,3 +472,48 @@ Change how the AI generates the final reminder so it's a genuine synthesis of (1
 **Claude Code token usage:** Not available.
 
 **Notes / issues:** None outstanding.
+
+## 2026-09-18 (7)
+### Task: One agent per skill, coordinated by the Main Agent
+
+**What I asked Claude Code to do:**
+"Make the agents for each skill" — add a dedicated agent for each of the 8 skills, rather than having debtCollectorAgent.ts call the skills directly.
+
+**What Claude Code did:**
+- Clarified scope first since this could mean either "replace the Main Agent with 8 flat agents" or "keep the Main Agent, add a layer of per-skill agents beneath it" — confirmed the latter, matching the original Main/Debt/Store/Message/Telegram-role design more closely (now with 8 more granular roles instead of 5).
+- Added `agent/{profileAgent,expenseReaderAgent,debtCalculationAgent,debtAgent,contextAgent,messageDraftAgent,telegramAgent,reminderAgent}.ts` — each a documented, addressable interface over exactly one matching skill.
+- Rewrote `agent/debtCollectorAgent.ts` (Main Agent) so it no longer imports any `skills/*.ts` file directly — every operation now goes through the matching per-skill agent. Its public function signatures (what the API routes call) are unchanged, so no route file needed to change.
+- Updated `agent/Agent_info.md`, `agent/Agents_DebtCollector`, and `plan.md` to describe the real structure: one Main Agent, one agent per skill, each agent owning exactly one skill underneath it.
+
+**Files created:** 8 new files under `agent/` (listed above).
+
+**Files modified:** `agent/debtCollectorAgent.ts`, `agent/Agent_info.md`, `agent/Agents_DebtCollector`, `plan.md`.
+
+**Result:** Same external behavior, cleaner internal layering — the Main Agent is now purely an orchestrator over named agents, and each agent is a stable, addressable unit that could later gain its own logic (retries, validation, etc.) without touching its skill.
+
+**Testing / verification:** Backend and frontend both build clean. Ran a full regression through the new chain via curl — create person → manual expense → create debt → generate message (real Groq call) → mark paid — all succeeded through debtCollectorAgent → the new per-skill agents → the existing skills → the database, with no behavior change. Test data cleaned up afterward.
+
+**Claude Code token usage:** Not available.
+
+**Notes / issues:** The API routes (`backend/api/routes/*.ts`) still import some skills directly for simple read/list operations that debtCollectorAgent doesn't expose (e.g. listing all people/expenses/debts). Only the agent layer itself was restructured, per the specific question that was confirmed — routing every API endpoint through the agent layer too would be a reasonable follow-up if full consistency end-to-end is wanted.
+
+## 2026-09-18 (8)
+### Task: Clean up the Expense detail page
+
+**What I asked Claude Code to do:**
+Clicking into an expense from the Expenses list looked like a text file, not clean like the rest of the app.
+
+**What Claude Code did:**
+- Found the real culprit using actual data already in the app: for image-derived expenses, when the model doesn't produce a proper `description`, the code fell back to `raw_context` — which the model sometimes filled with a full multi-line OCR transcription of the receipt (verified directly against a real expense in the database, e.g. an entire scanned Cambodia restaurant invoice dumped as one field). Rendered on the page, that's exactly what looked like a text file.
+- Rewrote `frontend/src/pages/ExpenseDetail.tsx`: a hero card (merchant, amount large, date, source badge), a receipt-style image, a clean two-column facts grid (fixing an invalid `dt`/`dd`-outside-`dl` markup bug in the process), an items list, and — for the long-text case — a distinct "Note" card that truncates to 3 lines with a "Show more" toggle instead of sprawling across the page.
+- Tightened the extraction prompt (`backend/ai/types.ts`) so `description`/`raw_context` are explicitly asked for as short summaries, not transcriptions, and added a defensive 300-character cap in `mapRawExtractionToExpense` regardless of what the model returns, as a second line of defense.
+
+**Files modified:** `frontend/src/pages/ExpenseDetail.tsx`, `backend/ai/types.ts`.
+
+**Result:** Verified live against the actual offending real expense in the database (a scanned restaurant invoice whose OCR dump had been shown in full) — it now renders as distinct, well-organized cards with the raw text properly contained and collapsible.
+
+**Testing / verification:** Frontend and backend both build clean. Confirmed visually in the browser against real user data (not synthetic test data) that the specific "text file" case is fixed.
+
+**Claude Code token usage:** Not available.
+
+**Notes / issues:** None outstanding.

@@ -37,11 +37,11 @@ exists today, in brief:
   via a one-time code shown on their profile page, sent as `/verify CODE` to the bot. Either way,
   their real numeric chat ID is captured and reminders can be sent to them for real (see
   `skills/telegramSkill.ts`, `backend/telegram/poller.ts`).
-- **One Agent, built entirely from Skills:** `agent/debtCollectorAgent.ts` is the only agent left in
-  the project, and every operation it exposes is a thin orchestration over one or more of
-  `skills/{profileSkill,expenseReaderSkill,debtCalculationSkill,debtSkill,contextSkill,
-  messageDraftSkill,telegramSkill,reminderSkill}.ts` — there's no agent logic that doesn't route
-  through a skill. See `agent/Agent_info.md` / `agent/Agents_DebtCollector` for the mapping.
+- **One Main Agent, one agent per Skill:** `agent/debtCollectorAgent.ts` is the Main Agent — it
+  never calls a skill directly, only ever the matching per-skill agent (`agent/{profileAgent,
+  expenseReaderAgent,debtCalculationAgent,debtAgent,contextAgent,messageDraftAgent,telegramAgent,
+  reminderAgent}.ts`), and each of those agents is the only thing that calls its one matching
+  `skills/*.ts` file. See `agent/Agent_info.md` / `agent/Agents_DebtCollector` for the full mapping.
 - **Persistent storage, contrary to Section F below:** `people`, `expenses`, `expense_debts`, and
   `reminders` all persist in the same SQLite file (`data/debts.db`) as the retired Telegram flow's
   `debts` table, whose historical rows are kept.

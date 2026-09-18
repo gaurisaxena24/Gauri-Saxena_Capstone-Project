@@ -120,6 +120,16 @@ export interface RawExpenseExtraction {
   raw_context: string | null;
 }
 
+const MAX_DESCRIPTION_LENGTH = 300;
+
+/** Defensive cap regardless of what the model returns — a UI note should never become a wall of text. */
+function capDescription(text: string | null | undefined): string | null {
+  if (!text) return null;
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  return trimmed.length > MAX_DESCRIPTION_LENGTH ? `${trimmed.slice(0, MAX_DESCRIPTION_LENGTH).trim()}…` : trimmed;
+}
+
 export function mapRawExtractionToExpense(raw: Partial<RawExpenseExtraction>): ExpenseExtraction {
   return {
     ...emptyExpenseExtraction(),
@@ -128,7 +138,7 @@ export function mapRawExtractionToExpense(raw: Partial<RawExpenseExtraction>): E
     total: typeof raw.amount === "number" ? raw.amount : null,
     currency: raw.currency ?? null,
     visibleNames: Array.isArray(raw.people) ? raw.people : [],
-    description: raw.description ?? raw.raw_context ?? null,
+    description: capDescription(raw.description) ?? capDescription(raw.raw_context),
   };
 }
 
@@ -165,9 +175,9 @@ export const EXPENSE_USER_PROMPT = `Extract whatever expense/payment information
   "currency": string | null,
   "date": string | null,
   "merchant_or_person": string | null,
-  "description": string | null,
+  "description": string | null,       // a short (under ~10 words) natural summary of what this was for, e.g. "dinner at a restaurant" or "UPI payment to a friend" — NOT a transcription of the receipt
   "people": string[],
-  "raw_context": string | null
+  "raw_context": string | null        // only if there's a brief, genuinely useful note beyond description (e.g. a stated purpose/split); short, NEVER a dump of everything visible in the image
 }`;
 
 export const REMINDER_SYSTEM_PROMPT = `You are the message-writing component of "Unhinged Debt Collector", an app that helps a \

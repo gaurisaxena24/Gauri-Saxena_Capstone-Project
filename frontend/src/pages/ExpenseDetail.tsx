@@ -4,10 +4,16 @@ import { getExpense, type Expense } from "../api/client";
 import { formatCurrency, formatDate } from "../lib/format";
 import { ErrorBanner } from "../components/ErrorBanner";
 
+const SOURCE_LABEL: Record<Expense["source"], string> = {
+  MANUAL: "Entered manually",
+  IMAGE: "Read from an image",
+};
+
 export function ExpenseDetail() {
   const { id } = useParams();
   const [expense, setExpense] = useState<(Expense & { debtIds: number[] }) | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [noteExpanded, setNoteExpanded] = useState(false);
 
   function load() {
     setError(null);
@@ -21,59 +27,123 @@ export function ExpenseDetail() {
   if (error) return <ErrorBanner message={error} onRetry={load} />;
   if (!expense) return null;
 
+  const note = expense.description;
+  const noteIsLong = Boolean(note && note.length > 220);
+  const facts: Array<{ label: string; value: string }> = [
+    { label: "Category", value: expense.category ?? "—" },
+    ...(expense.paymentMethod ? [{ label: "Payment method", value: expense.paymentMethod }] : []),
+    ...(expense.transactionReference ? [{ label: "Reference", value: expense.transactionReference }] : []),
+    ...(expense.visibleNames.length > 0 ? [{ label: "Names visible", value: expense.visibleNames.join(", ") }] : []),
+  ];
+
   return (
     <div className="mx-auto max-w-2xl">
       <Link to="/expenses" className="text-sm text-ink-soft hover:text-ink">
         ← All expenses
       </Link>
 
-      <div className="mt-3 mb-6">
-        <h1 className="font-display text-2xl font-bold text-ink">{expense.merchant ?? expense.category ?? "Expense"}</h1>
-        <p className="text-sm text-ink-faint">
-          {expense.source === "MANUAL" ? "Entered manually" : `Read from an image via ${expense.extractionMethod ?? "AI"}`} ·{" "}
-          {formatDate(expense.date ?? expense.createdAt)}
-        </p>
+      {/* Hero */}
+      <div className="mt-4 rounded-2xl border border-border bg-card p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm text-ink-faint">{expense.merchant ? "Paid to" : "Expense"}</p>
+            <h1 className="font-display text-2xl font-bold text-ink">
+              {expense.merchant ?? expense.category ?? "Expense"}
+            </h1>
+          </div>
+          <span className="shrink-0 rounded-full bg-ink/5 px-3 py-1 text-xs font-medium text-ink-soft">
+            {SOURCE_LABEL[expense.source]}
+            {expense.extractionMethod ? ` · ${expense.extractionMethod === "ocr" ? "OCR + AI" : "AI vision"}` : ""}
+          </span>
+        </div>
+
+        <p className="font-display mt-4 text-4xl font-bold text-ink">{formatCurrency(expense.total)}</p>
+        <p className="mt-1 text-sm text-ink-faint">{formatDate(expense.date ?? expense.createdAt)}</p>
+
+        {(expense.tax !== null || expense.tip !== null) && (
+          <div className="mt-4 flex gap-6 border-t border-border pt-4 text-sm">
+            {expense.tax !== null && (
+              <div>
+                <p className="text-ink-faint">Tax</p>
+                <p className="font-medium text-ink">{formatCurrency(expense.tax)}</p>
+              </div>
+            )}
+            {expense.tip !== null && (
+              <div>
+                <p className="text-ink-faint">Tip</p>
+                <p className="font-medium text-ink">{formatCurrency(expense.tip)}</p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-        {expense.imageUrl && (
-          <img src={expense.imageUrl} alt="Source" className="max-h-72 w-full rounded-xl border border-border object-contain" />
-        )}
-        <div className="space-y-1 rounded-2xl border border-border bg-card p-5 text-sm">
-          <Row label="Total" value={formatCurrency(expense.total)} />
-          {expense.tax !== null && <Row label="Tax" value={formatCurrency(expense.tax)} />}
-          {expense.tip !== null && <Row label="Tip" value={formatCurrency(expense.tip)} />}
-          <Row label="Category" value={expense.category ?? "—"} />
-          {expense.paymentMethod && <Row label="Payment method" value={expense.paymentMethod} />}
-          {expense.transactionReference && <Row label="Reference" value={expense.transactionReference} />}
-          {expense.description && <Row label="Description" value={expense.description} />}
-          {expense.visibleNames.length > 0 && <Row label="Names visible" value={expense.visibleNames.join(", ")} />}
+      {expense.imageUrl && (
+        <img
+          src={expense.imageUrl}
+          alt="Source"
+          className="mt-4 max-h-72 w-full rounded-2xl border border-border object-contain bg-card"
+        />
+      )}
+
+      {facts.length > 0 && (
+        <div className="mt-4 rounded-2xl border border-border bg-card p-5">
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-soft">Details</h2>
+          <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+            {facts.map((fact) => (
+              <div key={fact.label} className="flex items-baseline justify-between gap-3 sm:justify-start">
+                <dt className="text-ink-faint">{fact.label}</dt>
+                <dd className="text-right font-medium text-ink sm:text-left">{fact.value}</dd>
+              </div>
+            ))}
+          </dl>
         </div>
-      </div>
+      )}
 
       {expense.lineItems.length > 0 && (
-        <div className="mt-6 rounded-2xl border border-border bg-card p-5">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-ink-soft">Items</h2>
-          <ul className="space-y-1 text-sm">
+        <div className="mt-4 rounded-2xl border border-border bg-card p-5">
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-soft">Items</h2>
+          <ul className="divide-y divide-border text-sm">
             {expense.lineItems.map((item, i) => (
-              <li key={i} className="flex justify-between">
+              <li key={i} className="flex items-center justify-between py-2 first:pt-0 last:pb-0">
                 <span className="text-ink-soft">{item.name}</span>
-                <span className="text-ink">{formatCurrency(item.price)}</span>
+                <span className="font-medium text-ink">{formatCurrency(item.price)}</span>
               </li>
             ))}
           </ul>
         </div>
       )}
 
+      {note && (
+        <div className="mt-4 rounded-2xl border border-border bg-card p-5">
+          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-ink-soft">Note</h2>
+          <p
+            className={`whitespace-pre-line text-sm leading-relaxed text-ink-soft ${
+              noteIsLong && !noteExpanded ? "line-clamp-3" : ""
+            }`}
+          >
+            {note}
+          </p>
+          {noteIsLong && (
+            <button
+              onClick={() => setNoteExpanded((v) => !v)}
+              className="mt-2 text-xs font-medium text-ink-soft underline decoration-dotted underline-offset-2 hover:text-ink hover:no-underline"
+            >
+              {noteExpanded ? "Show less" : "Show more"}
+            </button>
+          )}
+        </div>
+      )}
+
       {expense.debtIds.length > 0 && (
-        <div className="mt-6">
+        <div className="mt-4">
           <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-ink-soft">Debts from this expense</h2>
           <div className="space-y-2">
             {expense.debtIds.map((debtId) => (
               <Link
                 key={debtId}
                 to={`/debts/${debtId}`}
-                className="block rounded-xl border border-border bg-card p-3 text-sm text-ink hover:border-ink/30"
+                className="block rounded-xl border border-border bg-card p-3 text-sm text-ink transition-colors hover:border-ink/30"
               >
                 View debt #{debtId}
               </Link>
@@ -81,15 +151,6 @@ export function ExpenseDetail() {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex justify-between">
-      <dt className="text-ink-faint">{label}</dt>
-      <dd className="font-medium text-ink">{value}</dd>
     </div>
   );
 }
