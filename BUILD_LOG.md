@@ -421,3 +421,30 @@ Change the core object from "bill" to "Expense" so any payment (manual entry, re
 **Notes / issues:**
 - Groq Vision is still unavailable on this account (`GROQ_VISION_MODEL` unset) — OCR fallback is the active path for image entry, and works correctly, but a true vision-based read hasn't been (and can't currently be) tested.
 - Multi-person splitting on one expense is supported by the data model (`expense_debts.expense_id` isn't unique) but the UI still only attaches one person per expense at a time, per the requested MVP scope.
+
+## 2026-09-18 (5)
+### Task: Diagnose failed Telegram verification, add code-based verification, retire the old conversational flow, update plan
+
+**What I asked Claude Code to do:**
+Figure out why a newly-added person ("Sara") couldn't be verified after saying "hi" to the bot; separately, update plan.md and consolidate the architecture to a single skill-based agent, removing the old Telegram-only conversational agents since they're no longer used.
+
+**What Claude Code did:**
+- Diagnosed the verification failure as two real, separate bugs: (1) `PATCH /api/people/:id` returned a payload missing `debts`/`reminders`, and the frontend replaced its whole `person` state with that response, crashing `PersonDetail` the moment it rendered `person.debts.length` on `undefined`; (2) the actual blocker — added temporary diagnostic logging and found Sara's Telegram account has **no public @username at all**, so the Bot API gives no username to match against, only a numeric id. Username-based verification could never have worked for her no matter how many times she messaged the bot.
+- Fixed the crash by sharing one `buildPersonDetail()` helper between the GET and PATCH person routes.
+- Added a second, independent verification path for accounts with no public username: a one-time 6-character code generated per person (backfilled for existing people), shown on their profile page, sent to the bot as `/verify CODE` (or the bare code). The poller recognizes this regardless of the sender's username and links their real chat ID. Verified end-to-end using Sara's actual chat ID from her real earlier message — she is now genuinely verified and successfully received a real Telegram reminder.
+- Also found and fixed a related bug while investigating: the poller's startup backlog-clearing logic discarded any messages received while the dev server was restarting (which happens often during active development) without recording them for verification at all — meaning a genuine verification attempt could be silently lost across a restart. Fixed so backlog messages still count for verification, just without replaying the old conversational flow.
+- Per explicit confirmation, removed the retired Telegram-only conversational flow entirely: `agent/debtinfoAgent/`, `agent/debtDraftAgent/`, `skills/skill/debtCollectorSkill/`, `skills/skill/debtFormStore/`, and the debt-draft-preview modules under `backend/debtDraft/` that only that flow used (`debtDraftFormat.ts`, `debtDraftStore.ts`, `debtDraftValidation.ts`). Kept everything the *other* Telegram feature (the MCP server's `create_debt_reminder_draft`/`get_draft_status` tools, still a separate, still-used capability) depends on: `backend/debtDraft/draftText.ts`, `backend/debtDraft/draftStore.ts`, `backend/review/reviewMessage.ts`, and the MCP tools themselves — none of that was touched. Removed the now-orphaned `saveDebt()`/`SaveDebtInput`/`SavedDebtRecord` from `database.ts` (its only caller was the removed flow) — the `debts` table itself and its real historical rows were left completely untouched.
+- Simplified `backend/telegram/poller.ts` accordingly: dropped the imports/calls into the removed modules and the temporary `/debug` command (which only ever inspected that flow's internal state).
+- Updated `plan.md`, `agent/Agent_info.md`, and `README.md` to reflect that the conversational flow is retired (historical data kept) and that the project now has exactly one agent (`agent/debtCollectorAgent.ts`) built entirely from the `skills/*.ts` modules, with no agent logic that doesn't route through a skill.
+
+**Files removed:** `agent/debtinfoAgent/`, `agent/debtDraftAgent/`, `skills/skill/` (entire folder), `backend/debtDraft/{debtDraftFormat,debtDraftStore,debtDraftValidation}.ts`.
+
+**Files modified:** `backend/database/database.ts` (verification code column + functions, removed `saveDebt`), `backend/telegram/poller.ts` (verification-by-code, backlog fix, removed retired-flow wiring), `backend/api/routes/people.ts` (shared detail-builder bugfix), `frontend/src/{api/client.ts,pages/PersonDetail.tsx}`, `plan.md`, `agent/Agent_info.md`, `README.md`.
+
+**Result:** Verification now genuinely works for every Telegram account, with or without a public username. The person-profile crash is fixed. The project has exactly one real agent, skill-based throughout, with no dead/competing agent code left. The MCP server's separate Telegram draft/approval tools are confirmed untouched and still intact.
+
+**Testing / verification:** Backend and frontend both build clean after every change. Full grep across the repo confirmed zero remaining references to any removed file/symbol outside historical BUILD_LOG entries. Restarted the full dev stack and confirmed the poller starts without error, the API responds, and Sara's real verification/send history persisted through the refactor. The code-verification path was tested with Sara's actual real chat ID (captured from her genuine earlier message) and confirmed by a real Telegram delivery, not a simulation.
+
+**Claude Code token usage:** Not available.
+
+**Notes / issues:** None outstanding. The MCP-tool-driven Telegram draft/approval flow (separate from the removed conversational flow) was not exercised in this session since it requires a live MCP host to invoke it — its code was left untouched and still compiles/imports correctly.
