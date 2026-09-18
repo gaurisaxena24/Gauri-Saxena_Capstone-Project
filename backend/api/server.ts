@@ -1,13 +1,18 @@
 import express from "express";
 import cors from "cors";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { UPLOADS_DIR } from "../database/database.js";
 import { isGroqConfigured } from "../ai/groqClient.js";
+import { findProjectRoot } from "../paths.js";
 import { authRouter } from "./routes/auth.js";
 import { peopleRouter } from "./routes/people.js";
 import { expensesRouter } from "./routes/expenses.js";
 import { debtsRouter } from "./routes/debts.js";
 import { remindersRouter } from "./routes/reminders.js";
 import { dashboardRouter } from "./routes/dashboard.js";
+
+const FRONTEND_DIST = resolve(findProjectRoot(import.meta.url), "frontend", "dist");
 
 export function startApiServer(): void {
   const app = express();
@@ -28,6 +33,13 @@ export function startApiServer(): void {
   app.use("/api/debts", debtsRouter);
   app.use("/api/reminders", remindersRouter);
   app.use("/api/dashboard", dashboardRouter);
+
+  if (existsSync(FRONTEND_DIST)) {
+    app.use(express.static(FRONTEND_DIST));
+    app.get(/^\/(?!api|uploads).*/, (_req, res) => {
+      res.sendFile(resolve(FRONTEND_DIST, "index.html"));
+    });
+  }
 
   app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error("Unhandled API error:", err);

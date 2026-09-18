@@ -8,7 +8,7 @@
     "node": ">=22.5.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm --prefix frontend install && npm --prefix frontend run build",
     "start": "node compiled/debt-collector-telegram-system/backend/index.js",
     "server:dev": "tsx watch backend/index.ts",
     "dev": "concurrently -n backend,frontend -c blue,green \"npm:server:dev\" \"npm --prefix frontend run dev\""
