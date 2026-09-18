@@ -34,7 +34,13 @@ export function startApiServer(): void {
   app.use("/api/reminders", remindersRouter);
   app.use("/api/dashboard", dashboardRouter);
 
-  if (existsSync(FRONTEND_DIST)) {
+  const frontendBuilt = existsSync(FRONTEND_DIST);
+  console.error(
+    frontendBuilt
+      ? `[api] Serving built frontend from ${FRONTEND_DIST}`
+      : `[api] No frontend build found at ${FRONTEND_DIST} — "npm run build" must build the frontend before "npm start". Only /api and /uploads routes are available.`
+  );
+  if (frontendBuilt) {
     app.use(express.static(FRONTEND_DIST));
     app.get(/^\/(?!api|uploads).*/, (_req, res) => {
       res.sendFile(resolve(FRONTEND_DIST, "index.html"));
