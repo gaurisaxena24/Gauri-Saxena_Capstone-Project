@@ -1,24 +1,32 @@
 /**
- * Debt Collector Agent — orchestrates the skills into the operations the web
- * app's API routes call. Each method is one explicit step; nothing here
- * chains straight through from generating a message to sending it — that
- * only ever happens across two separate HTTP requests, the second one only
- * ever triggered by the user's own "Send on Telegram" click.
+ * Debt Collector Agent ("Main Agent") — coordinates the eight per-skill
+ * agents into the operations the web app's API routes call. Each method is
+ * one explicit step; nothing here chains straight through from generating a
+ * message to sending it — that only ever happens across two separate HTTP
+ * requests, the second one only ever triggered by the user's own
+ * "Send on Telegram" click.
+ *
+ * This file never touches a skill directly — it only ever calls the
+ * matching agent (profileAgent, expenseReaderAgent, debtCalculationAgent,
+ * debtAgent, contextAgent, messageDraftAgent, telegramAgent, reminderAgent),
+ * each of which owns exactly one skill.
  */
 
-import { readExpenseFromImage, type ExpenseReadResult, type ExtractionMethod } from "../skills/expenseReaderSkill.js";
-import * as profileSkill from "../skills/profileSkill.js";
-import * as debtSkill from "../skills/debtSkill.js";
-import { computeShare, type ShareMode } from "../skills/debtCalculationSkill.js";
-import { buildReminderContext } from "../skills/contextSkill.js";
-import { draftReminderMessage } from "../skills/messageDraftSkill.js";
-import { sendApprovedMessage } from "../skills/telegramSkill.js";
-import * as reminderSkill from "../skills/reminderSkill.js";
+import * as expenseReaderAgent from "./expenseReaderAgent.js";
+import * as profileAgent from "./profileAgent.js";
+import * as debtAgent from "./debtAgent.js";
+import * as debtCalculationAgent from "./debtCalculationAgent.js";
+import * as contextAgent from "./contextAgent.js";
+import * as messageDraftAgent from "./messageDraftAgent.js";
+import * as telegramAgent from "./telegramAgent.js";
+import * as reminderAgent from "./reminderAgent.js";
 import type { ExpenseExtraction, ReminderContext, Tone } from "../backend/ai/types.js";
 import type { Expense, ExpenseDebt, Person } from "../backend/database/database.js";
+import type { ExpenseReadResult, ExtractionMethod } from "./expenseReaderAgent.js";
+import type { ShareMode } from "./debtCalculationAgent.js";
 
 export async function readImageExpense(imageBuffer: Buffer, mediaType: string): Promise<ExpenseReadResult> {
-  return readExpenseFromImage(imageBuffer, mediaType);
+  return expenseReaderAgent.readImage(imageBuffer, mediaType);
 }
 
 export function createManualExpense(input: {
@@ -31,7 +39,7 @@ export function createManualExpense(input: {
   paymentMethod: string | null;
   notes: string | null;
 }): Expense {
-  return debtSkill.recordExpense({
+  return debtAgent.recordExpense({
     source: "MANUAL",
     merchant: input.merchant,
     expenseDate: input.date,
@@ -56,7 +64,7 @@ export function createImageExpense(params: {
   imagePath: string;
 }): Expense {
   const { extraction } = params;
-  return debtSkill.recordExpense({
+  return debtAgent.recordExpense({
     source: "IMAGE",
     merchant: extraction.merchant,
     expenseDate: extraction.date,
@@ -83,13 +91,13 @@ export function attachPersonToExpense(params: {
   additionalContext?: string | null;
   desiredAction?: string | null;
 }): { debt: ExpenseDebt; context: ReminderContext } {
-  const expense = debtSkill.getExpenseById(params.expenseId);
+  const expense = debtAgent.getExpenseById(params.expenseId);
   if (!expense) throw new Error("Expense not found.");
-  const person = profileSkill.findPersonById(params.personId);
+  const person = profileAgent.findPersonById(params.personId);
   if (!person) throw new Error("Person not found.");
 
-  const amount = computeShare(params.mode, expense.total, params.customAmount);
-  const debt = debtSkill.attachDebt({
+  const amount = debtCalculationAgent.calculateShare(params.mode, expense.total, params.customAmount);
+  const debt = debtAgent.attachDebt({
     expenseId: expense.id,
     personId: person.id,
     amount,
@@ -100,10 +108,10 @@ export function attachPersonToExpense(params: {
     contextJson: null,
   });
 
-  const context = buildReminderContext({ person, expense, debt });
+  const context = contextAgent.buildContext({ person, expense, debt });
   // Persisted so regenerate/change-tone reuse the exact same facts rather
   // than drifting between calls.
-  const withContext = debtSkill.saveContext(debt.id, context)!;
+  const withContext = debtAgent.saveContext(debt.id, context)!;
   return { debt: withContext, context };
 }
 
@@ -113,12 +121,12 @@ export async function generateDraft(params: {
   forcedTone?: Tone;
   regenerate?: boolean;
 }) {
-  const generated = await draftReminderMessage({
+  const generated = await messageDraftAgent.draftMessage({
     context: params.context,
     forcedTone: params.forcedTone,
     previousMessage: params.regenerate ? (params.debt.message ?? undefined) : undefined,
   });
-  const updated = debtSkill.saveDraftMessage(params.debt.id, {
+  const updated = debtAgent.saveDraftMessage(params.debt.id, {
     message: generated.message,
     tone: generated.tone,
     edited: false,
@@ -127,17 +135,17 @@ export async function generateDraft(params: {
 }
 
 export function editDraft(debtId: number, message: string) {
-  const debt = debtSkill.getDebt(debtId);
-  return debtSkill.saveDraftMessage(debtId, { message, tone: debt?.tone ?? null, edited: true });
+  const debt = debtAgent.getDebt(debtId);
+  return debtAgent.saveDraftMessage(debtId, { message, tone: debt?.tone ?? null, edited: true });
 }
 
 export async function sendReminder(debt: ExpenseDebt, person: Person) {
   if (!debt.message) throw new Error("Generate a message before sending.");
 
   try {
-    const result = await sendApprovedMessage(person, debt.message);
+    const result = await telegramAgent.sendMessage(person, debt.message);
     if (!result.success) {
-      reminderSkill.logReminder({
+      reminderAgent.logReminder({
         debtId: debt.id,
         personId: person.id,
         message: debt.message,
@@ -146,7 +154,7 @@ export async function sendReminder(debt: ExpenseDebt, person: Person) {
       });
       return { success: false, error: result.message };
     }
-    const reminder = reminderSkill.logReminder({
+    const reminder = reminderAgent.logReminder({
       debtId: debt.id,
       personId: person.id,
       message: debt.message,
@@ -156,7 +164,7 @@ export async function sendReminder(debt: ExpenseDebt, person: Person) {
     });
     return { success: true, reminder };
   } catch (error) {
-    reminderSkill.logReminder({
+    reminderAgent.logReminder({
       debtId: debt.id,
       personId: person.id,
       message: debt.message,
@@ -168,5 +176,5 @@ export async function sendReminder(debt: ExpenseDebt, person: Person) {
 }
 
 export function markDebtPaid(debtId: number) {
-  return debtSkill.markPaid(debtId, "PAID");
+  return debtAgent.markPaid(debtId, "PAID");
 }
