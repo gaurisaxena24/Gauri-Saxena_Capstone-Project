@@ -11,6 +11,6 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true
   },
-  "include": ["agent/**/*", "skills/**/*", "backend/**/*", "frontend/**/*"],
-  "exclude": ["node_modules", "compiled", "data"]
+  "include": ["agent/**/*", "skills/**/*", "backend/**/*"],
+  "exclude": ["node_modules", "compiled", "data", "frontend"]
 }

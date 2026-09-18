@@ -1,5 +1,56 @@
 Unhinged Debt Collector — MVP Plan
 
+## Status: Implemented Beyond the Original MVP
+
+Sections A–K below are the original MVP plan, written before any code existed, and are kept as-is
+as the record of the initial reasoning (see Section H/I for why that reasoning still matters for
+grading). The project has since grown past that scope into a full local web app. What actually
+exists today, in brief:
+
+- **Telegram-only conversational flow — retired.** The original MVP+ (chat "hi" directly to the
+  bot, answer a structured question form, preview/edit/save) lived in `agent/debtinfoAgent`,
+  `agent/debtDraftAgent`, and `skills/skill/debtCollectorSkill`. Once the web app fully replaced it
+  as the actual way the product is used, that code was removed; its historical rows in the `debts`
+  table are kept, never dropped. The MCP server (`backend/index.ts`) and its Telegram-sending tools
+  are untouched and still used independently of that retired flow.
+- **Local web app (the only flow now, and the current main way to use the product):** a React/Vite frontend
+  (`frontend/`) talks to an Express API (`backend/api/`) that reuses the same SQLite database and
+  Telegram-sending code path. The core object is an **Expense**, not a bill — added either by
+  typing it in manually or by uploading any payment-related image (restaurant bill, Google
+  Pay/UPI screenshot, receipt, payment confirmation — never assumed to be a traditional itemized
+  bill). Flow: add expense (manual or image) → person → full/half/custom share → automatically-built
+  context → AI-generated, tone-adjustable reminder → explicit human review/edit → explicit "Send on
+  Telegram" → reminder history. Generation and sending are hard-separated across different HTTP
+  endpoints: nothing reaches Telegram without an explicit send click (see `BUILD_LOG.md`).
+- **Groq only, with automatic OCR fallback:** one AI provider (`GROQ_API_KEY` in `.env`, no in-app
+  key management) handles both image reading and message generation
+  (`backend/ai/groqClient.ts`, `skills/expenseReaderSkill.ts`, `skills/messageDraftSkill.ts`).
+  Verified directly against the real API that most Groq accounts have no vision-capable model —
+  when `GROQ_VISION_MODEL` isn't set (or a vision attempt fails), the app automatically falls back
+  to local OCR (tesseract.js) followed by a Groq text call over the extracted text, with no
+  provider choice exposed to the user. This directly satisfies — with a real implementation — the
+  "AI reasoning over context, not template filling" argument in Section H/I below.
+- **Real people, with genuine Telegram verification:** a name, phone number, or typed username is
+  never treated as proof of identity. If a person has a public Telegram @username, the poller
+  verifies them automatically the moment they message the bot. Accounts with no public username —
+  which the Bot API otherwise gives no way to identify at all, only a numeric id — verify instead
+  via a one-time code shown on their profile page, sent as `/verify CODE` to the bot. Either way,
+  their real numeric chat ID is captured and reminders can be sent to them for real (see
+  `skills/telegramSkill.ts`, `backend/telegram/poller.ts`).
+- **One Agent, built entirely from Skills:** `agent/debtCollectorAgent.ts` is the only agent left in
+  the project, and every operation it exposes is a thin orchestration over one or more of
+  `skills/{profileSkill,expenseReaderSkill,debtCalculationSkill,debtSkill,contextSkill,
+  messageDraftSkill,telegramSkill,reminderSkill}.ts` — there's no agent logic that doesn't route
+  through a skill. See `agent/Agent_info.md` / `agent/Agents_DebtCollector` for the mapping.
+- **Persistent storage, contrary to Section F below:** `people`, `expenses`, `expense_debts`, and
+  `reminders` all persist in the same SQLite file (`data/debts.db`) as the retired Telegram flow's
+  `debts` table, whose historical rows are kept.
+
+Run it with `npm run dev` (frontend on `http://localhost:5173`, API on `:4000`). See `README.md`
+for the one-paragraph overview and `BUILD_LOG.md` for the full build-by-build history.
+
+---
+
 ## A. MVP Feature List
 1. Debt Input Form — structured fields for: person's name, amount owed, reason for debt, days/weeks overdue, relationship to user, prior reminder status (yes/no), optional free-text context.
 2. AI Context Interpretation — the AI reads all inputs (not just amount/time) and forms an internal assessment of the situation (e.g. "small amount, close friend, first reminder, no prior contact → keep it light").
@@ -83,14 +134,23 @@ No memory store, no agent framework, no tool use required. Regeneration is just 
 
 ## F. Explicitly Out of Scope for MVP
 
-- Splitwise or any external finance app integration
-- User accounts, authentication, or login
-- Persistent database / debt history storage
-- Long-term memory of a person across multiple debts or sessions
-- Fully autonomous agent that sends messages without human review
-- Multi-user support, sharing, or collaboration features
-- Analytics/dashboards on debts owed over time
-- Payment tracking or marking debts as "paid"
+*(Original MVP-time list — see "Status" section at the top for what's since shipped.)*
+
+- Splitwise or any external finance app integration — **still out of scope.**
+- User accounts, authentication, or login — **partially implemented:** a local-dev-only
+  Telegram-username "login" exists in the web app, explicitly not real authentication.
+- Persistent database / debt history storage — **implemented:** SQLite (`data/debts.db`),
+  extended with `people`/`bills` tables and a History page.
+- Long-term memory of a person across multiple debts or sessions — **implemented:** a person's
+  prior debt/reminder/paid counts feed the AI context for every new reminder about them.
+- Fully autonomous agent that sends messages without human review — **still out of scope, by
+  design:** every send requires an explicit user click, in both the Telegram-only flow and the
+  web app.
+- Multi-user support, sharing, or collaboration features — **still out of scope** (single local
+  user).
+- Analytics/dashboards on debts owed over time — **partially implemented:** the Dashboard shows
+  current totals, not historical trends.
+- Payment tracking or marking debts as "paid" — **implemented:** a "Mark as paid" action exists.
 
 These are strong candidates for a "Phase 2 / Advanced Version" section, showing growth potential without bloating the MVP.
 

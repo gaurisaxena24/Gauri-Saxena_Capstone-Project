@@ -11,3 +11,6 @@ compiled/
 
 # SQLite database
 data/*.db
+
+# Uploaded bill photos
+data/uploads/

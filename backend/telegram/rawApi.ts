@@ -21,6 +21,7 @@ export interface TelegramMessage {
   chat: { id: number };
   text?: string;
   reply_to_message?: { message_id: number };
+  from?: { id: number; username?: string };
 }
 
 export interface TelegramCallbackQuery {

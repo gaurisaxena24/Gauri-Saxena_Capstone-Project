@@ -20,13 +20,7 @@ import {
   formatResolvedSuffix,
 } from "../review/reviewMessage.js";
 import { sendTelegramMessage } from "../tools/sendTelegramMessage.js";
-import { runDebtCollectorAgentStep } from "../../agent/debtinfoAgent/debtinfoAgent.js";
-import {
-  handleDebtDraftCallback,
-  handleDebtDraftEditReply,
-} from "../../agent/debtDraftAgent/debtDraftAgent.js";
-import { debugListSessions } from "../../skills/skill/debtFormStore/debtFormStore.js";
-import { debugListDebtDrafts } from "../debtDraft/debtDraftStore.js";
+import { upsertTelegramContact, verifyPersonByCode, verifyPersonTelegram } from "../database/database.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -114,37 +108,71 @@ async function handleCallbackQuery(cb: TelegramCallbackQuery): Promise<void> {
   }
 }
 
-/** TEMPORARY DEBUG HELPER — remove once the multi-step loop is fully verified. */
-async function handleDebugCommand(message: TelegramMessage): Promise<boolean> {
-  if (message.text?.trim() !== "/debug") return false;
+/**
+ * Handles the web app's Telegram-verification code (`/verify ABC123`, or the
+ * bare code on its own) — the only way to verify someone whose Telegram
+ * account has no public @username, since the Bot API then gives no
+ * username to match against at all, only a numeric id.
+ */
+async function handleVerifyCommand(message: TelegramMessage): Promise<boolean> {
+  const text = message.text?.trim();
+  if (!text) return false;
 
-  const sessions = debugListSessions();
-  const drafts = debugListDebtDrafts();
-  const report =
-    `[DEBUG] active debtFormStore sessions (${sessions.length}):\n${JSON.stringify(sessions, null, 2)}\n\n` +
-    `[DEBUG] active debtDraftStore drafts (${drafts.length}):\n${JSON.stringify(drafts, null, 2)}`;
+  const match = text.match(/^\/verify\s+([A-Za-z0-9]{4,8})$/i) ?? text.match(/^([A-Za-z0-9]{6})$/);
+  if (!match) return false;
 
-  console.log(report);
-  await tgSendMessage(message.chat.id, report);
+  const code = match[1];
+  const person = verifyPersonByCode(code, message.chat.id, message.from?.id ?? message.chat.id);
+
+  if (!person) {
+    // Only swallow this as "handled" once it actually looks like a code
+    // attempt (matched via /verify); a bare 6-char guess that misses could
+    // plausibly be something else the user meant to say, so let it fall
+    // through to other handlers instead of replying with a confusing error.
+    if (!text.toLowerCase().startsWith("/verify")) return false;
+    await tgSendMessage(message.chat.id, "That code doesn't match anyone. Double-check it in the app and try again.");
+    return true;
+  }
+
+  console.log(`[Telegram] verified ${person.name} (person id ${person.id}) via code, chat ${message.chat.id}`);
+  await tgSendMessage(message.chat.id, `You're verified! ${person.name} can now send you reminders here.`);
   return true;
+}
+
+/**
+ * The Bot API can only ever send a message to a numeric chat_id, never a
+ * bare @username — so this is the only place a username-to-chat_id mapping
+ * can come from: an incoming message that actually carries both. Recording
+ * it here is what lets the web app's "Send via Telegram" resolve a person's
+ * Telegram username to somewhere real to deliver to.
+ */
+function recordTelegramContact(message: TelegramMessage): void {
+  if (message.from?.username) {
+    console.log(
+      `[Telegram] incoming message from @${message.from.username} (user id ${message.from.id}, chat ${message.chat.id})`
+    );
+    upsertTelegramContact(message.from.username, message.chat.id);
+    // This incoming message is the only honest proof the Bot API gives us
+    // that a claimed username belongs to a real, reachable Telegram account —
+    // so it's also what marks a person's profile as Telegram-verified.
+    verifyPersonTelegram(message.from.username, message.chat.id, message.from.id);
+  } else if (message.from) {
+    // No public @username on this Telegram account — the Bot API gives no
+    // other way to match it to a username a person typed into this app, so
+    // verification can't happen for them until they set one.
+    console.log(
+      `[Telegram] incoming message from user id ${message.from.id} (chat ${message.chat.id}) — this account has no public @username, so it can't be matched/verified.`
+    );
+  }
 }
 
 export async function handleUpdate(update: TelegramUpdate): Promise<void> {
   if (update.message) {
-    if (await handleDebugCommand(update.message)) return;
-
-    const consumedByDebtCollector = await runDebtCollectorAgentStep(update.message);
-    if (consumedByDebtCollector) return;
-
-    const consumedByDraftEdit = await handleDebtDraftEditReply(update.message);
-    if (consumedByDraftEdit) return;
-
+    recordTelegramContact(update.message);
+    if (await handleVerifyCommand(update.message)) return;
     await handleReplyEdit(update.message);
   } else if (update.callback_query) {
-    const consumedByDebtDraft = await handleDebtDraftCallback(update.callback_query);
-    if (!consumedByDebtDraft) {
-      await handleCallbackQuery(update.callback_query);
-    }
+    await handleCallbackQuery(update.callback_query);
   }
 }
 
@@ -152,7 +180,19 @@ export async function startTelegramPoller(): Promise<void> {
   let offset = 0;
 
   try {
+    // Discarded rather than replayed through the full conversational flow —
+    // stale messages shouldn't suddenly trigger the Skill/Agent loop after a
+    // restart. But a backlog message is still real proof of who messaged the
+    // bot, so it must still count for Telegram verification; otherwise every
+    // dev-server restart (there can be many) silently erases any
+    // verification attempt someone made while the server was down.
     const backlog = await tgGetUpdates(0, 0);
+    for (const update of backlog) {
+      if (update.message) {
+        recordTelegramContact(update.message);
+        await handleVerifyCommand(update.message);
+      }
+    }
     if (backlog.length > 0) {
       offset = backlog[backlog.length - 1].update_id + 1;
     }

@@ -1,5 +1,17 @@
 # Unhinged Debt Collector — Sequential Agent Architecture
 
+> **Status:** this document describes the originally-planned four-agent reasoning pipeline
+> (Context → Escalation → Message). The web app now has a real, separately-invoked agent and
+> skills implementing this — `agent/debtCollectorAgent.ts` orchestrates `skills/contextSkill.ts`
+> (Context), `skills/messageDraftSkill.ts` (Escalation + Message, collapsed into one Groq call per
+> the pattern plan.md Section E already allowed: "this can technically be done as one LLM call with
+> a structured JSON output... for MVP simplicity"), `skills/debtCalculationSkill.ts`,
+> `skills/profileSkill.ts`, `skills/telegramSkill.ts`, and `skills/reminderSkill.ts`. The "Understand
+> → Decide → Generate" reasoning below is exactly what messageDraftSkill's one prompt asks Groq to
+> do internally. The Super Agent's orchestration role (stop at preview, wait for explicit user
+> action, never auto-send) is real and enforced across separate HTTP endpoints in
+> `backend/api/routes/debts.ts`, only ever chained together by explicit user clicks in the frontend.
+
 ## Goal
 
 Build the Unhinged Debt Collector using a sequential multi-agent workflow.

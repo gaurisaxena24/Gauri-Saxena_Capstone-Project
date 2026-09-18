@@ -1,13 +1,13 @@
 import { config } from "dotenv";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
+import { findProjectRoot } from "./paths.js";
 
-// .env lives at the project root. Resolve it relative to this file's
-// compiled location (compiled/debt-collector-telegram-system/backend/), not
-// process.cwd(), so the token loads correctly no matter what working
+// .env lives at the project root. Found by walking up to package.json rather
+// than a fixed number of `../` segments, so it resolves correctly whether
+// this runs from source (tsx) or compiled output, and no matter what working
 // directory the MCP host launches this server from.
-const __dirname = dirname(fileURLToPath(import.meta.url));
-config({ path: resolve(__dirname, "../../../.env") });
+const PROJECT_ROOT = findProjectRoot(import.meta.url);
+config({ path: resolve(PROJECT_ROOT, ".env") });
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -24,6 +24,7 @@ import {
   getDraftStatusInputSchema,
 } from "./tools/getDraftStatus.js";
 import { startTelegramPoller } from "./telegram/poller.js";
+import { startApiServer } from "./api/server.js";
 
 const server = new McpServer({
   name: "unhinged-debt-collector-mcp-server",
@@ -84,6 +85,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   void startTelegramPoller();
+  startApiServer();
 }
 
 main().catch((error) => {

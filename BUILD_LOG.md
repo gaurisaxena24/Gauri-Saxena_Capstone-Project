@@ -331,3 +331,93 @@ Not available.
 
 **Notes / issues:**
 None.
+
+## 2026-09-18 (2)
+### Task: Build the local web app on top of the existing Telegram/MCP system
+
+**What I asked Claude Code to do:**
+Build a full local web app (upload a bill → OCR → tag person → pick amount → AI builds context automatically → AI generates a tone-appropriate reminder → review/edit/send via Telegram → history), reusing the existing Skill/Agent/MCP server/database rather than rebuilding, with no fake AI responses and no invented Telegram capabilities.
+
+**What Claude Code did:**
+- Inspected the existing repo first: found the MCP stdio server + Telegram long-poller had zero real AI integration (message generation was a plain string template) and a single `debts` SQLite table with no people/bills/history support, and no frontend or HTTP API existed at all.
+- Fixed a latent bug (`backend/paths.ts`): `.env`/`data/` path resolution depended on a hardcoded number of `../` segments that only worked for compiled output, not `tsx` — needed for the new `npm run dev`.
+- Extended `data/debts.db` additively: new `people`, `bills`, `telegram_contacts`, `users` tables, plus nullable columns added to the existing `debts` table (`person_id`, `bill_id`, `status`, `message`, `telegram_sent`, `context_json`, `source`, …). Old Telegram-flow rows and code are untouched.
+- Added `backend/ai/` — a dependency-free Anthropic Messages API client (matching the existing raw-fetch style used for Telegram) for bill vision-OCR and structured tone/message generation. No AI SDK dependency added; `ANTHROPIC_API_KEY` required via `.env`, with a clean "AI not configured" error path (no fake data) when absent.
+- Added `backend/api/` — an Express + Multer HTTP API (new deps, justified by the multipart upload requirement), booted from the *same* process as the existing Telegram poller and MCP server so there's still only one long-poller.
+- Hooked the existing poller to cache Telegram username→chat_id from real incoming messages, since the Bot API can only ever deliver to a numeric chat_id — "Send via Telegram" resolves a person's username against that cache, falling back to the existing test-mode-to-reviewer-chat pattern when the recipient hasn't messaged the bot yet.
+- Built `frontend/` (React + Vite + TypeScript + Tailwind v4): Login (Telegram-username local-dev auth), Dashboard, a 5-step Upload Bill wizard (upload → extracted-and-editable bill info → tag/create person → full/half/custom amount → AI reminder with tone pills/regenerate/edit/send), People list/detail, History list/detail.
+- Verified the entire pipeline for real via curl (login, people, bill seeding, debt creation with computed context, manual message edit, a genuine Telegram send that hit the real Bot API, mark-as-paid, dashboard aggregation, static image serving) and visually via a live browser session (Login, Dashboard, People, Person detail, Debt detail all screenshotted and confirmed correct); fixed one polish bug found this way (unformatted bill date on the debt detail page).
+
+**Files created/modified:** see architecture summary given to the user in-session; broadly `backend/paths.ts`, `backend/ai/*`, `backend/api/*`, `frontend/` (entire new app), plus additive changes to `backend/database/database.ts`, `backend/index.ts`, `backend/telegram/{rawApi,poller}.ts`, `tsconfig.json`, `package.json`, `.gitignore`, new `.env.example`.
+
+**Result:** `npm run dev` from the project root runs frontend (`http://localhost:5173`) + API (`:4000`) together. Login/dashboard/people/history/manual debt flow and real Telegram sending are fully working now. Bill OCR and AI message generation are wired correctly but need the user to add their own `ANTHROPIC_API_KEY` to `.env` — untested against a live model in this session since no key was available.
+
+**Testing / verification:** `npm run build` (backend `tsc`) and `frontend`'s `tsc -b && vite build` both clean. Full API pipeline exercised via curl including a real Telegram delivery. Live browser session via Claude in Chrome confirmed Login/Dashboard/People/Person-detail/Debt-detail render correctly with real seeded data and no console errors; upload flow's AI-not-configured error path confirmed to render correctly end-to-end.
+
+**Claude Code token usage:** Not available.
+
+**Notes / issues:**
+- One test person ("Rahul") and one test debt were seeded while verifying the pipeline end-to-end — left in place pending the user's confirmation on whether to clear it before a demo.
+- Bill OCR / AI message quality cannot be confirmed live until `ANTHROPIC_API_KEY` is added — the error-handling path is confirmed correct, but real model output is unverified in this session.
+
+## 2026-09-18 (3)
+### Task: Diagnose xAI key, add multi-provider Groq support, fix orphaned-upload bug, clean up project
+
+**What I asked Claude Code to do:**
+Diagnose why the Grok/xAI connection still failed after adding a key; separately, add support for the user's real Groq key ("make it one env"); update plan.md to reflect reality; audit and remove unused/extra files while keeping frontend/backend/agent/skills/README/BUILD_LOG/plan.md.
+
+**What Claude Code did:**
+- Diagnosed the xAI failure by testing directly against xAI's raw API (bypassing all app code): found `.env` had a duplicated variable name (`XAI_API_KEYXAI_API_KEY=`) so the key was never actually loaded, a stale invalid key saved via the Settings UI was permanently shadowing `.env` regardless, and once both were fixed, a leading space in the value was also stripped — proved via direct `curl` against `api.x.ai/v1/models` that the final key value itself was still rejected as invalid by xAI's own servers, independent of any app code.
+- Also fixed a real bug found in the process: `AiRequestError`/provider failures were being swallowed into a generic "Couldn't read that bill" message with no logging — now the actual provider error (e.g. "Incorrect API key provided") is logged and shown.
+- Added `tsx watch` to the dev script — backend changes weren't hot-reloading before, which had been silently hiding earlier fixes.
+- User then replaced `.env` to use `GROQ_API_KEY` (Groq Inc., the fast-inference company — distinct from xAI's "Grok") instead. Added `backend/ai/providers/groq.ts` as a fifth provider. Verified the key directly against Groq's API: valid, but this account has no vision-capable model available (only text/audio models) — verified by testing an actual chat completion. Added a `supportsVision` flag to the `AiProvider` interface so Settings labels Groq "text-only" and the bill-upload picker only offers vision-capable, configured providers, rather than silently failing every time Groq is picked.
+- Found and fixed a real bug while auditing: bill image uploads that failed extraction (all 29 of the user's real attempts, from before the key was fixed) were saved to `data/uploads/` but the code only inserted a DB row on success — meaning every failed attempt left an orphaned image file forever. Fixed `bills.ts` to delete the uploaded file on any failure path.
+- Cleaned up: 29 orphaned upload images (none referenced by any DB row, confirmed before deleting), the old `compiled/_pre-reorg-build-snapshot/` build snapshot, `.DS_Store`, and all of my own test data from prior sessions (2 test people, 2 test bills, 2 test debts, 1 test login) — leaving only the user's real 3 original Telegram-flow debts and real `gauri` login untouched.
+- Updated `plan.md` with a "Status" section at the top mapping the original MVP plan to what's actually shipped, and annotated Section F's "out of scope" list with what's since been implemented, without rewriting the original reasoning.
+- Updated `agent/Agent_info.md` and `agent/Agents_DebtCollector` with status notes clarifying which parts of the originally-planned multi-agent design became real separate code vs. were collapsed into a single AI call, since the original docs described an aspirational design that was never fully built as separate agent files.
+- Updated `README.md` with a short "how to run it" section; updated `.env.example` to include `GROQ_API_KEY`/`GROQ_MODEL`.
+
+**Files created/modified:** `backend/ai/providers/groq.ts` (new), `backend/ai/types.ts`, `backend/ai/registry.ts`, `backend/ai/keyStore.ts`, `backend/ai/providers/{anthropic,gemini,openai,grok,openAiCompatible}.ts`, `backend/api/routes/bills.ts`, `.env` (formatting fixes), `.env.example`, `package.json` (`tsx watch`), `plan.md`, `agent/Agent_info.md`, `agent/Agents_DebtCollector`, `README.md`, `frontend/src/{api/client.ts,pages/Settings.tsx,pages/UploadBillFlow.tsx}`.
+
+**Files/data removed:** `compiled/_pre-reorg-build-snapshot/` (dead build output, was git-tracked — deletion is staged, not committed), `.DS_Store`, 29 orphaned upload images, and my own seeded test rows (people/bills/debts/user) from `data/debts.db`.
+
+**Result:** Groq is a working, correctly-labeled text-only provider; xAI/Anthropic/Gemini/OpenAI remain available for vision once a valid key is added. The orphaned-file bug is fixed going forward. Project state matches the user's real usage (3 real Telegram debts) with no leftover test clutter.
+
+**Testing / verification:** `npm run build` (backend) and frontend `tsc -b && vite build` both clean. Verified via direct `curl` against both xAI's and Groq's real APIs (independent of app code) that: the xAI key is genuinely invalid, the Groq key is genuinely valid, and Groq's account has no accessible vision model. Verified via live browser screenshots that Settings correctly shows Groq as "Connected / text-only" and the Upload page correctly refuses to offer it for bill reading with an accurate, actionable message.
+
+**Claude Code token usage:** Not available.
+
+**Notes / issues:**
+- The user still needs a valid key for a vision-capable provider (Anthropic/Gemini/OpenAI, or a working xAI key) before bill-photo reading will work end-to-end. Groq now works correctly for what it *can* do (nothing yet reachable in this app's flow uses text-only generation independently of a bill, so practically Groq is "connected but not yet exercised" until either a vision key is added elsewhere or a future feature uses text-only generation directly).
+- `git status` shows the `compiled/_pre-reorg-build-snapshot/` deletion staged but not committed — left for the user to review/commit, per instructions not to commit without being asked.
+
+## 2026-09-18 (4)
+### Task: Rebuild as a general Expense tracker (not bill-only), Groq-only, manual entry, OCR fallback, Telegram verification
+
+**What I asked Claude Code to do:**
+Change the core object from "bill" to "Expense" so any payment (manual entry, restaurant bill, Google Pay/UPI screenshot, receipt) goes through one system; make Groq the only AI provider (no in-app key management); add automatic OCR fallback when Groq has no vision model; require genuine Telegram verification before sending (not just a typed username/phone); restructure into a single Agent + named Skills; remove all example/demo data; keep the message-preview/approval separation from before.
+
+**What Claude Code did:**
+- Audited the existing web app (built over the prior 3 sessions) before changing anything: found a working multi-provider (Anthropic/Gemini/OpenAI/xAI/Groq) bill-reading system with a Settings page, a `bills`+`debts`-additive-columns schema, and message preview/send separation already correctly enforced.
+- Removed the entire multi-provider system (Settings page/route, `backend/ai/providers/*`, `backend/ai/registry.ts`, `backend/ai/keyStore.ts`, the `ai_keys` DB table) — Groq is now the only provider, configured solely via `GROQ_API_KEY` in the one root `.env`, with no key input anywhere in the frontend.
+- Replaced the bill-only data model with a general Expense model: new `expenses` (source MANUAL|IMAGE, merchant, date, total, currency, tax, tip, category, payment method, transaction reference, description, line items, visible names, image), `expense_debts` (one row per person's share — multiple rows per expense is how more than one person could be attached later, without hard-coding a single-person assumption), and `reminders` (permanent send-attempt history, SENT/FAILED) tables. Dropped the now-empty, fully-superseded `bills` table. The original `debts` table (Telegram-only flow) and its rows were left completely untouched.
+- Added a real OCR fallback (`tesseract.js`, a new dependency — no external API/key) in `skills/expenseReaderSkill.ts`: tries Groq Vision only if `GROQ_VISION_MODEL` is explicitly set (most Groq accounts don't have one — verified directly against the real API in a prior session), otherwise runs local OCR and feeds the extracted text to Groq's text model. Tested end-to-end with a real generated receipt image: OCR correctly read merchant, date, total, tax, payment method, transaction reference, and all line items, which Groq then structured correctly.
+- Restructured into the requested architecture: `agent/debtCollectorAgent.ts` (single orchestrating agent) + `skills/{profileSkill,expenseReaderSkill,debtCalculationSkill,debtSkill,contextSkill,messageDraftSkill,telegramSkill,reminderSkill}.ts`, added as new top-level files alongside (not replacing) the existing Telegram-only flow's `agent/debtDraftAgent/`, `agent/debtinfoAgent/`, and `skills/skill/` — those remain untouched and still work.
+- Implemented genuine Telegram verification: `people` gained `phone_number`, `telegram_user_id`, `telegram_chat_id`, `telegram_verified` columns. A phone number or typed username is never treated as proof; a person is only marked verified when the existing Telegram poller (`backend/telegram/poller.ts`) actually observes an incoming message from that exact username — the only proof the Bot API can give — which also captures their real chat ID. `skills/telegramSkill.ts` refuses to send to anyone not verified, with a clear, actionable error rather than a silent fallback.
+- Found and fixed a real bug during testing: the newly-built AI context was computed at debt-creation time but never actually persisted (`JSON.stringify(null)` produces the truthy string `"null"`, which passed the "has context" falsy-check but meant Groq received no real facts) — first end-to-end test produced a technically-successful but context-free, generic message. Fixed by writing the real computed context back to the debt row immediately after creation; re-tested and confirmed the regenerated message correctly referenced the real amount, category, and history.
+- Removed all example/demo data: the app now starts with genuinely empty People/Expenses/Debts/Reminders and shows "No X yet." states rather than seeded names.
+- Rebuilt the entire frontend around Expenses: `AddExpenseFlow.tsx` starts with an explicit "Upload screenshot/receipt" vs "Enter manually" choice (manual entry never calls Groq), new `Expenses`/`ExpenseDetail`/`Debts`/`Reminders` pages, `People`/`PersonDetail` updated with phone number and a Telegram-verification status section with instructions, `DebtDetail` shows send history (SENT/FAILED) per attempt. Nav is now Dashboard/People/Expenses/Debts/Reminders + a persistent "+ Add Expense" button.
+
+**Files created:** `backend/ai/groqClient.ts`, `agent/debtCollectorAgent.ts`, `skills/{profileSkill,expenseReaderSkill,debtCalculationSkill,debtSkill,contextSkill,messageDraftSkill,telegramSkill,reminderSkill}.ts`, `backend/api/routes/{expenses,reminders}.ts`, `frontend/src/pages/{AddExpenseFlow,Expenses,ExpenseDetail,Debts,Reminders}.tsx`.
+
+**Files removed:** `backend/ai/providers/*`, `backend/ai/registry.ts`, `backend/ai/keyStore.ts`, `backend/ai/extractBill.ts`, `backend/ai/generateReminder.ts`, `backend/api/routes/{settings,bills,debtMapper}.ts`, `frontend/src/pages/{Settings,UploadBillFlow,History,DebtDetail-old}.tsx` (DebtDetail was rewritten, not just deleted).
+
+**Result:** Manual expense entry works without touching Groq at all (verified live by the user themselves mid-session). Image entry correctly falls back to real OCR + Groq text (Groq Vision isn't available on this account — verified directly, not assumed) and extracts accurate structured data from a real test receipt. Telegram sending is genuinely blocked until a person is verified, and correctly unblocks and delivers once verification is simulated/real. Reminder history records both FAILED (blocked) and SENT attempts accurately. Dashboard/People/Expenses/Debts/Reminders all reflect real data with correct empty states.
+
+**Testing / verification:** Backend `tsc` and frontend `tsc -b && vite build` both clean. Full pipeline exercised via curl: manual expense creation, FULL/HALF debt-share math, message generation (caught and fixed the context-persistence bug above), manual edit, blocked send while unverified (403 + clear message), a genuine Telegram send after simulating verification (real `telegram_message_id` returned), reminder history showing both the failed and successful attempts, mark-as-paid, and dashboard/list aggregation. A real synthetic receipt image was generated and run through the actual OCR→Groq pipeline with correct extraction of every field. Live browser screenshots confirmed the Add Expense choice screen, empty People/Dashboard states, and the user's own real manually-entered expense rendering correctly.
+
+**Claude Code token usage:** Not available.
+
+**Notes / issues:**
+- Groq Vision is still unavailable on this account (`GROQ_VISION_MODEL` unset) — OCR fallback is the active path for image entry, and works correctly, but a true vision-based read hasn't been (and can't currently be) tested.
+- Multi-person splitting on one expense is supported by the data model (`expense_debts.expense_id` isn't unique) but the UI still only attaches one person per expense at a time, per the requested MVP scope.
