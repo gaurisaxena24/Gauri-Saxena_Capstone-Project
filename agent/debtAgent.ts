@@ -29,8 +29,11 @@ export function editExpense(
     expenseDate: string | null;
     total: number;
     currency: string | null;
+    subtotal: number | null;
     tax: number | null;
     tip: number | null;
+    serviceCharge: number | null;
+    discount: number | null;
     category: string | null;
     paymentMethod: string | null;
     description: string | null;
@@ -49,6 +52,7 @@ export function attachDebt(input: {
   additionalContext: string | null;
   desiredAction: string | null;
   contextJson: unknown;
+  selectedItems?: Array<{ name: string; amount: number }> | null;
 }): ExpenseDebt {
   return debtSkill.attachDebt(input);
 }

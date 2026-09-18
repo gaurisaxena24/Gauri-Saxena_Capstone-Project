@@ -48,7 +48,14 @@ export interface ExpenseReadResult {
   extractionFailed?: boolean;
 }
 
-const EXTRACTION_MAX_TOKENS = 2048;
+// Itemized bills produce much bigger JSON than a flat total — the old 2048 budget was tuned for
+// the pre-line-items schema and could truncate a many-item receipt before it finished.
+const EXTRACTION_MAX_TOKENS = 3072;
+
+const DEBUG = process.env.NODE_ENV !== "production";
+function debugLog(...args: unknown[]): void {
+  if (DEBUG) console.log("[expense-extract]", ...args);
+}
 
 /** Groq's own inability to produce a schema-valid completion — as opposed to auth/network errors. */
 function isJsonGenerationFailure(error: unknown): boolean {
@@ -57,17 +64,30 @@ function isJsonGenerationFailure(error: unknown): boolean {
 
 async function runExtraction(call: () => Promise<string>): Promise<ExpenseExtraction> {
   const raw = await call();
-  const parsed = extractJson<Partial<RawExpenseExtraction>>(raw);
-  return mapRawExtractionToExpense(parsed);
+  debugLog("raw model response (first 500 chars):", raw.slice(0, 500));
+  let parsed: Partial<RawExpenseExtraction>;
+  try {
+    parsed = extractJson<Partial<RawExpenseExtraction>>(raw);
+  } catch (error) {
+    debugLog("JSON extraction/parsing failed:", error instanceof Error ? error.message : error);
+    throw error;
+  }
+  const mapped = mapRawExtractionToExpense(parsed);
+  debugLog(
+    `mapped: ${mapped.lineItems.length} item(s), grandTotal=${mapped.total}, confidence=${mapped.confidence}`
+  );
+  return mapped;
 }
 
 async function readViaOcr(imageBuffer: Buffer): Promise<{ extraction: ExpenseExtraction; extractionFailed: boolean }> {
   const {
     data: { text },
   } = await Tesseract.recognize(imageBuffer, "eng");
+  debugLog(`OCR read ${text?.length ?? 0} character(s) of text`);
 
   if (!text || !text.trim()) {
     // No text at all to work with — a real, valid "couldn't read this" result, not an error to throw.
+    debugLog("OCR returned no usable text");
     return { extraction: emptyExpenseExtraction(), extractionFailed: true };
   }
 
@@ -91,6 +111,9 @@ async function readViaOcr(imageBuffer: Buffer): Promise<{ extraction: ExpenseExt
 
 export async function readExpenseFromImage(imageBuffer: Buffer, mediaType: string): Promise<ExpenseReadResult> {
   const visionModel = getVisionModel();
+  debugLog(
+    `image received: ${imageBuffer.length} bytes, mediaType=${mediaType}, visionModel=${visionModel ?? "(not set — will use OCR fallback)"}`
+  );
 
   if (visionModel) {
     try {
@@ -105,13 +128,15 @@ export async function readExpenseFromImage(imageBuffer: Buffer, mediaType: strin
           reasoningEffort: "low",
         })
       );
+      debugLog("vision extraction succeeded");
       return { extraction, method: "vision" };
     } catch (error) {
       if (isJsonGenerationFailure(error)) {
+        debugLog("vision call returned malformed/no JSON — treating as an honest 'couldn't read this'");
         return { extraction: emptyExpenseExtraction(), method: "vision", extractionFailed: true };
       }
       console.error(
-        "Groq vision attempt failed, falling back to OCR:",
+        `[expense-extract] Groq vision attempt failed (model=${visionModel}), falling back to OCR:`,
         error instanceof Error ? error.message : error
       );
     }

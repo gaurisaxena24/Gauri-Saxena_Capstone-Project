@@ -10,6 +10,11 @@ import type { Expense } from "../../database/database.js";
 
 export const expensesRouter = Router();
 
+const DEBUG = process.env.NODE_ENV !== "production";
+function debugLog(...args: unknown[]): void {
+  if (DEBUG) console.log("[expense-extract]", ...args);
+}
+
 const EXT_TO_MIME: Record<string, string> = {
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -29,8 +34,11 @@ function toExpensePayload(
     date: expense.expense_date,
     total: expense.total,
     currency: expense.currency,
+    subtotal: expense.subtotal,
     tax: expense.tax,
     tip: expense.tip,
+    serviceCharge: expense.service_charge,
+    discount: expense.discount,
     category: expense.category,
     paymentMethod: expense.payment_method,
     transactionReference: expense.transaction_reference,
@@ -38,6 +46,7 @@ function toExpensePayload(
     lineItems: expense.line_items_json ? JSON.parse(expense.line_items_json) : [],
     visibleNames: expense.visible_names_json ? JSON.parse(expense.visible_names_json) : [],
     imageUrl: expense.image_path ? uploadPathToUrl(expense.image_path) : null,
+    confidence: expense.extraction_confidence,
     createdAt: expense.created_at,
     ...extra,
   };
@@ -70,13 +79,16 @@ expensesRouter.post("/", (req, res) => {
 expensesRouter.post("/extract", (req, res) => {
   uploadImage.single("image")(req, res, async (uploadError) => {
     if (uploadError) {
+      debugLog("multer/upload rejected the request:", uploadError.message);
       res.status(400).json({ error: uploadError.message || "Couldn't read that image. Try another photo." });
       return;
     }
     if (!req.file) {
+      debugLog("no `image` field found on the request — file never reached the backend");
       res.status(400).json({ error: "No image uploaded." });
       return;
     }
+    debugLog(`upload received: originalname=${req.file.originalname}, mimetype=${req.file.mimetype}, size=${req.file.size} bytes`);
 
     const cleanupUpload = () => unlink(req.file!.path).catch(() => {});
 
@@ -92,7 +104,9 @@ expensesRouter.post("/extract", (req, res) => {
     try {
       const imageBuffer = await readFile(req.file.path);
       const mediaType = EXT_TO_MIME[extname(req.file.path).toLowerCase()] ?? req.file.mimetype;
+      debugLog(`resolved mediaType=${mediaType} (from extension, falling back to multer's reported mimetype)`);
       const { extraction, method, extractionFailed } = await agent.readImageExpense(imageBuffer, mediaType);
+      debugLog(`extraction done via ${method}, extractionFailed=${Boolean(extractionFailed)}, items=${extraction.lineItems.length}`);
 
       const expense = agent.createImageExpense({ extraction, method, imagePath: req.file.path });
       res.status(201).json(toExpensePayload(expense, { extractionMethod: method, extractionFailed }));
@@ -135,15 +149,31 @@ expensesRouter.patch("/:id", (req, res) => {
     return;
   }
 
-  const { merchant, date, total, currency, tax, tip, category, paymentMethod, description, lineItems } =
-    req.body ?? {};
+  const {
+    merchant,
+    date,
+    total,
+    currency,
+    subtotal,
+    tax,
+    tip,
+    serviceCharge,
+    discount,
+    category,
+    paymentMethod,
+    description,
+    lineItems,
+  } = req.body ?? {};
   const updated = debtSkill.editExpense(id, {
     merchant: merchant !== undefined ? merchant : undefined,
     expenseDate: date !== undefined ? date : undefined,
     total: total !== undefined ? Number(total) : undefined,
     currency: currency !== undefined ? currency : undefined,
+    subtotal: subtotal !== undefined ? (subtotal === null ? null : Number(subtotal)) : undefined,
     tax: tax !== undefined ? (tax === null ? null : Number(tax)) : undefined,
     tip: tip !== undefined ? (tip === null ? null : Number(tip)) : undefined,
+    serviceCharge: serviceCharge !== undefined ? (serviceCharge === null ? null : Number(serviceCharge)) : undefined,
+    discount: discount !== undefined ? (discount === null ? null : Number(discount)) : undefined,
     category: category !== undefined ? category : undefined,
     paymentMethod: paymentMethod !== undefined ? paymentMethod : undefined,
     description: description !== undefined ? description : undefined,
