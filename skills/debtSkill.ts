@@ -8,6 +8,7 @@
 import {
   createExpense,
   createExpenseDebt,
+  deleteExpense,
   deleteExpenseDebt,
   getDebtsForExpense,
   getDebtsForPerson,
@@ -59,6 +60,11 @@ export function getExpenseById(id: number): Expense | undefined {
 
 export function listAllExpenses(limit?: number): Expense[] {
   return listExpenses(limit);
+}
+
+/** Removes an expense and only that expense — never `people`, never the debts drafted against it. */
+export function removeExpense(id: number): { imagePath: string | null } | undefined {
+  return deleteExpense(id);
 }
 
 export function editExpense(

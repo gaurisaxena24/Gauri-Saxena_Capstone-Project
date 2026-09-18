@@ -189,3 +189,8 @@ export function markDebtPaid(debtId: number) {
 export function removeDebt(debtId: number): boolean {
   return debtAgent.removeDebt(debtId);
 }
+
+/** Removes an expense only — never the person. Fails (a real DB foreign key) if any debt still references it; remove those debts first. */
+export function removeExpense(expenseId: number): { imagePath: string | null } | undefined {
+  return debtAgent.removeExpense(expenseId);
+}

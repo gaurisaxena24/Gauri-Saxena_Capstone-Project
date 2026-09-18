@@ -22,6 +22,10 @@ export function listAllExpenses(limit?: number): Expense[] {
   return debtSkill.listAllExpenses(limit);
 }
 
+export function removeExpense(id: number): { imagePath: string | null } | undefined {
+  return debtSkill.removeExpense(id);
+}
+
 export function editExpense(
   id: number,
   patch: Partial<{

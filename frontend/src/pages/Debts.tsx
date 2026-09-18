@@ -54,9 +54,8 @@ export function Debts() {
 
       <div className="space-y-3">
         {debts?.map((debt) => {
-          // A debt whose person lookup failed (e.g. the person no longer exists) — the only case
-          // this data model can produce for an otherwise-valid debt row.
-          const invalid = !debt.personName;
+          // A debt whose person or expense no longer exists (e.g. either was deleted).
+          const invalid = !debt.personExists || !debt.expenseExists;
           return (
             <div
               key={debt.id}
