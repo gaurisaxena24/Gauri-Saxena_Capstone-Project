@@ -5,8 +5,12 @@
  */
 
 import { getRemindersForPerson, type Expense, type ExpenseDebt, type Person } from "../backend/database/database.js";
-import { getDebtsByPerson } from "./debtSkill.js";
-import type { ReminderContext } from "../backend/ai/types.js";
+import { getDebtsByPerson, getExpenseById } from "./debtSkill.js";
+import { TONES, type ReminderContext, type Tone } from "../backend/ai/types.js";
+
+function isTone(value: string | null): value is Tone {
+  return value !== null && (TONES as readonly string[]).includes(value);
+}
 
 function daysBetween(from: Date, to: Date): number {
   return Math.max(0, Math.round((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24)));
@@ -19,9 +23,24 @@ export function buildReminderContext(params: {
 }): ReminderContext {
   const { person, expense, debt } = params;
   const priorDebts = getDebtsByPerson(person.id).filter((d) => d.id !== debt.id);
+  // getRemindersForPerson orders newest-first, so this filter preserves that order — [0] is the
+  // most recently sent reminder to this person, for anything but the debt being messaged about now.
   const priorReminders = getRemindersForPerson(person.id).filter(
     (r) => r.status === "SENT" && r.debt_id !== debt.id
   );
+  const lastReminderTone = isTone(priorReminders[0]?.tone ?? null) ? (priorReminders[0].tone as Tone) : null;
+
+  const otherOpenDebts = priorDebts
+    .filter((d) => d.status === "UNPAID")
+    .slice(0, 5)
+    .map((d) => {
+      const otherExpense = getExpenseById(d.expense_id);
+      return {
+        amount: d.amount,
+        reason: otherExpense?.description ?? otherExpense?.merchant ?? otherExpense?.category ?? "a shared expense",
+        daysOutstanding: daysBetween(new Date(d.created_at), new Date()),
+      };
+    });
 
   return {
     person: {
@@ -46,6 +65,8 @@ export function buildReminderContext(params: {
       previousReminders: priorReminders.length,
       previousPaidDebts: priorDebts.filter((d) => d.status === "PAID").length,
       daysOutstanding: daysBetween(new Date(debt.created_at), new Date()),
+      lastReminderTone,
+      otherOpenDebts,
     },
   };
 }

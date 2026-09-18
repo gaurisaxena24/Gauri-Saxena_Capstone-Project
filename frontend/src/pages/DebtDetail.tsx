@@ -81,8 +81,17 @@ export function DebtDetail() {
               <Row label="Previous reminders" value={String(debt.context.history.previousReminders)} />
               <Row label="Previously paid" value={String(debt.context.history.previousPaidDebts)} />
               <Row label="Days outstanding" value={String(debt.context.history.daysOutstanding)} />
+              {debt.context.history.lastReminderTone && (
+                <Row label="Tone last used" value={debt.context.history.lastReminderTone} />
+              )}
               {debt.context.debt.desiredAction && <Row label="Requested action" value={debt.context.debt.desiredAction} />}
             </dl>
+            {debt.context.history.otherOpenDebts.length > 0 && (
+              <div className="mt-3 border-t border-border pt-3 text-sm text-ink-soft">
+                <span className="text-ink-faint">Also owes for: </span>
+                {debt.context.history.otherOpenDebts.map((d) => `${d.reason} (${formatCurrency(d.amount)})`).join(", ")}
+              </div>
+            )}
             {debt.context.person.description && (
               <p className="mt-3 border-t border-border pt-3 text-sm text-ink-soft">
                 <span className="text-ink-faint">Person description used: </span>

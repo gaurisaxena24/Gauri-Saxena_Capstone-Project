@@ -517,3 +517,36 @@ Clicking into an expense from the Expenses list looked like a text file, not cle
 **Claude Code token usage:** Not available.
 
 **Notes / issues:** None outstanding.
+
+## 2026-09-19
+### Task: Richer person memory + genuinely human-sounding reminders
+
+**What I asked Claude Code to do:**
+Make the system remember a person across separate debts (without merging old and new debts together) and rewrite message generation so reminders read like a real text from a friend, not four AI-template tones.
+
+**What Claude Code did:**
+- Inspected the existing architecture first, as asked, before changing anything: `people`/`expense_debts`/`reminders` (`backend/database/database.ts`) already store a persistent per-person record (matched by Telegram username) with one row per debt and a full reminder audit log; the person picker in `AddExpenseFlow.tsx` already reuses an existing person rather than re-asking their relationship/description; and `skills/contextSkill.ts` already fed some of this into the AI. So the real gap was narrower than "add person memory from scratch": the AI's context only carried *counts* (`previousDebts`, `previousReminders`) — never the actual other unpaid debts or which tone was used last — so it couldn't reference "the other thing they owe for" or continue an established dynamic, and had no way to keep escalating consistently across reminders.
+- Extended `ReminderContext.history` (`backend/ai/types.ts`) with `lastReminderTone` (the tone actually used the last time a reminder was sent to this person, from the real `reminders` row, or `null`) and `otherOpenDebts` (this person's other currently-unpaid debts as real `{amount, reason, daysOutstanding}` facts, capped at 5, excluding the debt being messaged about). `skills/contextSkill.ts` computes both purely from existing rows — no new tables, no invented data.
+- Rewrote `REMINDER_SYSTEM_PROMPT` and `buildReminderPrompt` to (a) explicitly tell the model how to use this history — first-ever reminders get no faked familiarity, a later one to a close relationship can be more blunt/tired, and an existing other debt can be acknowledged naturally but must never be added into the amount being asked for — and (b) push much harder on sounding like an actual text message: contractions and imperfect grammar/punctuation are explicitly framed as more natural rather than mistakes, greetings/sign-offs are dropped unless the relationship needs them, corporate phrasing ("kindly", "outstanding balance", "I hope this finds you well") is explicitly banned, length/structure must vary between messages, and regenerating must produce a genuinely different structure rather than a reworded sentence.
+- The four escalation tones (Casual/Funny/Passive-Aggressive/Unhinged) are unchanged as a set, but the prompt now treats them as one person's texting voice shifting register, not four separate templates.
+- Mirrored the two new `history` fields into the frontend's `ReminderContext` type (`frontend/src/api/client.ts`) and surfaced them on the debt detail page (`DebtDetail.tsx`: "Tone last used" row, "Also owes for: …" line) so the memory actually being used is visible, not just internal.
+- Confirmed no re-asking was needed on the input side: the person step in `AddExpenseFlow.tsx` already only asks name/relationship/description once, when a person is first created, and reuses the saved person for every later debt — nothing had to change there.
+- Documented all of this in `README.md` (new "Person memory" and "Human-sounding messages" sections).
+
+**Files modified:** `backend/ai/types.ts`, `skills/contextSkill.ts`, `frontend/src/api/client.ts`, `frontend/src/pages/DebtDetail.tsx`, `README.md`, `BUILD_LOG.md`.
+
+**Result:** Verified against real Groq calls, not assumptions.
+
+**Testing / verification:** Backend `tsc --noEmit` and frontend `tsc -b && vite build` both clean; full project `npm run build` clean. Ran the full pipeline live via curl against the real Groq API:
+1. Created a new person (Rahul, close friend, "always forgets to pay until reminded, jokes around a lot") → person record created.
+2. Created a ₹500 "dinner" debt for him, generated a message ("hey Rahul, that 500 INR dinner is still waiting for its rescue mission 😅…"), then seeded one SENT reminder (tone "Funny") to simulate prior history.
+3. Created a *second*, separate ₹800 "concert tickets" debt for the same person. Confirmed via `GET /debts/:id` that the app recognized him as the same person (reused relationship/description) while keeping the ₹500 debt as its own untouched row (`history.previousDebts: 1`, `otherOpenDebts: [{amount:500, reason:"dinner"}]`) rather than merging or overwriting it, and correctly carried `lastReminderTone: "Funny"` forward.
+4. Generated the message for the second debt: it asked for exactly ₹800, naturally mentioned the outstanding ₹500 dinner without adding it in ("…don't forget the 500 ₹ dinner cash either"), and kept the same joking voice — a genuinely different message from the first, not a template reuse.
+5. Created an unrelated second person (Priya, coworker, no description, no history) with a ₹300 debt: context correctly showed all-zero history and `lastReminderTone: null`, and the generated message ("Just a heads up, the 300 INR from lunch is still pending…") was more measured/polite and invented nothing, in clear contrast to Rahul's messages.
+6. Regenerated Rahul's dinner reminder: produced a genuinely different phrasing ("yo, that 500 INR dinner is still chilling in my account…") at the same tone, not a reworded duplicate.
+7. Confirmed existing behavior is unchanged: sending to an unverified person is still blocked with the same error, and marking a debt paid still works.
+All test people/expenses/debts/reminders were deleted from `data/debts.db` afterward — the real user's existing data was untouched.
+
+**Claude Code token usage:** Not available.
+
+**Notes / issues:** `otherOpenDebts` is capped at 5 entries for prompt size — not expected to matter in practice, but worth revisiting if someone ever has many simultaneous open debts with the same person.

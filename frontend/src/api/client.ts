@@ -197,7 +197,14 @@ export interface ReminderContext {
     additionalContext: string | null;
     desiredAction: string | null;
   };
-  history: { previousDebts: number; previousReminders: number; previousPaidDebts: number; daysOutstanding: number };
+  history: {
+    previousDebts: number;
+    previousReminders: number;
+    previousPaidDebts: number;
+    daysOutstanding: number;
+    lastReminderTone: string | null;
+    otherOpenDebts: Array<{ amount: number; reason: string; daysOutstanding: number }>;
+  };
 }
 
 export interface DebtSummary {
