@@ -1,0 +1,31 @@
+{
+  "name": "unhinged-debt-collector-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for Unhinged Debt Collector (Telegram tool)",
+  "type": "module",
+  "main": "compiled/debt-collector-telegram-system/backend/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node compiled/debt-collector-telegram-system/backend/index.js",
+    "server:dev": "tsx watch backend/index.ts",
+    "dev": "concurrently -n backend,frontend -c blue,green \"npm:server:dev\" \"npm --prefix frontend run dev\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "multer": "^2.4.0",
+    "tesseract.js": "^7.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.2.0",
+    "@types/node": "^22.10.5",
+    "concurrently": "^10.0.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

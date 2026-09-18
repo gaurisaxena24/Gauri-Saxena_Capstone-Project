@@ -1,0 +1,219 @@
+import {
+  tgGetUpdates,
+  tgSendMessage,
+  tgEditMessageText,
+  tgAnswerCallbackQuery,
+  type TelegramUpdate,
+  type TelegramMessage,
+  type TelegramCallbackQuery,
+} from "./rawApi.js";
+import {
+  getDraft,
+  updateDraftText,
+  setLiveMessage,
+  resolveDraft,
+  findPendingDraftByLiveMessage,
+} from "../debtDraft/draftStore.js";
+import {
+  buildApprovalKeyboard,
+  formatReviewMessage,
+  formatResolvedSuffix,
+} from "../review/reviewMessage.js";
+import { sendTelegramMessage } from "../tools/sendTelegramMessage.js";
+import { upsertTelegramContact, verifyPersonByCode, verifyPersonTelegram } from "../database/database.js";
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Best-effort: the button press already happened, so a failed toast must not undo it. */
+async function safeAnswerCallbackQuery(id: string, text: string): Promise<void> {
+  try {
+    await tgAnswerCallbackQuery(id, text);
+  } catch (error) {
+    console.error("Failed to answer callback query:", error);
+  }
+}
+
+async function handleReplyEdit(message: TelegramMessage): Promise<void> {
+  const replyTo = message.reply_to_message;
+  if (!replyTo || !message.text) return;
+
+  const draft = findPendingDraftByLiveMessage(message.chat.id, replyTo.message_id);
+  if (!draft) return;
+
+  updateDraftText(draft.draftId, message.text);
+
+  const newMessage = await tgSendMessage(
+    draft.reviewerChatId,
+    formatReviewMessage({
+      draftId: draft.draftId,
+      recipientLabel: draft.recipientLabel,
+      draftText: message.text,
+      edited: true,
+    }),
+    buildApprovalKeyboard(draft.draftId)
+  );
+  setLiveMessage(draft.draftId, newMessage.message_id);
+}
+
+async function handleCallbackQuery(cb: TelegramCallbackQuery): Promise<void> {
+  if (!cb.data || !cb.message) return;
+  const [action, draftId] = cb.data.split(":");
+  const draft = getDraft(draftId);
+
+  if (
+    !draft ||
+    draft.status !== "pending" ||
+    draft.liveMessageId !== cb.message.message_id
+  ) {
+    await safeAnswerCallbackQuery(
+      cb.id,
+      "This draft was already handled or has been superseded by a newer edit."
+    );
+    return;
+  }
+
+  if (action === "approve") {
+    const approvedText = draft.text;
+    const result = await sendTelegramMessage({
+      chatId: draft.recipientChatId,
+      message: approvedText,
+      confirm: true,
+    });
+    resolveDraft(draft.draftId, "approved", {
+      approvedText,
+      sentToRecipient: result.success,
+    });
+    await tgEditMessageText(
+      cb.message.chat.id,
+      cb.message.message_id,
+      `${cb.message.text ?? approvedText}${formatResolvedSuffix("approved")}`
+    );
+    await safeAnswerCallbackQuery(
+      cb.id,
+      result.success ? "Approved and sent." : `Approved, but send failed: ${result.message}`
+    );
+    return;
+  }
+
+  if (action === "reject") {
+    resolveDraft(draft.draftId, "rejected");
+    await tgEditMessageText(
+      cb.message.chat.id,
+      cb.message.message_id,
+      `${cb.message.text ?? draft.text}${formatResolvedSuffix("rejected")}`
+    );
+    await safeAnswerCallbackQuery(cb.id, "Rejected. Nothing was sent.");
+  }
+}
+
+/**
+ * Handles the web app's Telegram-verification code (`/verify ABC123`, or the
+ * bare code on its own) — the only way to verify someone whose Telegram
+ * account has no public @username, since the Bot API then gives no
+ * username to match against at all, only a numeric id.
+ */
+async function handleVerifyCommand(message: TelegramMessage): Promise<boolean> {
+  const text = message.text?.trim();
+  if (!text) return false;
+
+  const match = text.match(/^\/verify\s+([A-Za-z0-9]{4,8})$/i) ?? text.match(/^([A-Za-z0-9]{6})$/);
+  if (!match) return false;
+
+  const code = match[1];
+  const person = verifyPersonByCode(code, message.chat.id, message.from?.id ?? message.chat.id);
+
+  if (!person) {
+    // Only swallow this as "handled" once it actually looks like a code
+    // attempt (matched via /verify); a bare 6-char guess that misses could
+    // plausibly be something else the user meant to say, so let it fall
+    // through to other handlers instead of replying with a confusing error.
+    if (!text.toLowerCase().startsWith("/verify")) return false;
+    await tgSendMessage(message.chat.id, "That code doesn't match anyone. Double-check it in the app and try again.");
+    return true;
+  }
+
+  console.log(`[Telegram] verified ${person.name} (person id ${person.id}) via code, chat ${message.chat.id}`);
+  await tgSendMessage(message.chat.id, `You're verified! ${person.name} can now send you reminders here.`);
+  return true;
+}
+
+/**
+ * The Bot API can only ever send a message to a numeric chat_id, never a
+ * bare @username — so this is the only place a username-to-chat_id mapping
+ * can come from: an incoming message that actually carries both. Recording
+ * it here is what lets the web app's "Send via Telegram" resolve a person's
+ * Telegram username to somewhere real to deliver to.
+ */
+function recordTelegramContact(message: TelegramMessage): void {
+  if (message.from?.username) {
+    console.log(
+      `[Telegram] incoming message from @${message.from.username} (user id ${message.from.id}, chat ${message.chat.id})`
+    );
+    upsertTelegramContact(message.from.username, message.chat.id);
+    // This incoming message is the only honest proof the Bot API gives us
+    // that a claimed username belongs to a real, reachable Telegram account —
+    // so it's also what marks a person's profile as Telegram-verified.
+    verifyPersonTelegram(message.from.username, message.chat.id, message.from.id);
+  } else if (message.from) {
+    // No public @username on this Telegram account — the Bot API gives no
+    // other way to match it to a username a person typed into this app, so
+    // verification can't happen for them until they set one.
+    console.log(
+      `[Telegram] incoming message from user id ${message.from.id} (chat ${message.chat.id}) — this account has no public @username, so it can't be matched/verified.`
+    );
+  }
+}
+
+export async function handleUpdate(update: TelegramUpdate): Promise<void> {
+  if (update.message) {
+    recordTelegramContact(update.message);
+    if (await handleVerifyCommand(update.message)) return;
+    await handleReplyEdit(update.message);
+  } else if (update.callback_query) {
+    await handleCallbackQuery(update.callback_query);
+  }
+}
+
+export async function startTelegramPoller(): Promise<void> {
+  let offset = 0;
+
+  try {
+    // Discarded rather than replayed through the full conversational flow —
+    // stale messages shouldn't suddenly trigger the Skill/Agent loop after a
+    // restart. But a backlog message is still real proof of who messaged the
+    // bot, so it must still count for Telegram verification; otherwise every
+    // dev-server restart (there can be many) silently erases any
+    // verification attempt someone made while the server was down.
+    const backlog = await tgGetUpdates(0, 0);
+    for (const update of backlog) {
+      if (update.message) {
+        recordTelegramContact(update.message);
+        await handleVerifyCommand(update.message);
+      }
+    }
+    if (backlog.length > 0) {
+      offset = backlog[backlog.length - 1].update_id + 1;
+    }
+  } catch (error) {
+    console.error("Failed to clear Telegram update backlog:", error);
+  }
+
+  for (;;) {
+    try {
+      const updates = await tgGetUpdates(offset, 25);
+      for (const update of updates) {
+        offset = update.update_id + 1;
+        try {
+          await handleUpdate(update);
+        } catch (error) {
+          console.error("Error handling Telegram update:", error);
+        }
+      }
+    } catch (error) {
+      console.error("Telegram getUpdates failed, retrying shortly:", error);
+      await sleep(3000);
+    }
+  }
+}

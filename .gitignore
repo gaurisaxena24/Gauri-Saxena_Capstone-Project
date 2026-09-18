@@ -1,2 +1,16 @@
 .DS_Store
 test-file.md
+
+# Environment variables
+.env
+
+# Node
+node_modules/
+compiled/
+*.log
+
+# SQLite database
+data/*.db
+
+# Uploaded bill photos
+data/uploads/
