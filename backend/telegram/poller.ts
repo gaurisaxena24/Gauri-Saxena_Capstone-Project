@@ -25,7 +25,7 @@ import {
   handleDebtDraftCallback,
   handleDebtDraftEditReply,
 } from "../../agent/debtDraftAgent/debtDraftAgent.js";
-import { debugListSessions } from "../../skills/debtCollector/debtFormStore/debtFormStore.js";
+import { debugListSessions } from "../../skills/skill/debtFormStore/debtFormStore.js";
 import { debugListDebtDrafts } from "../debtDraft/debtDraftStore.js";
 
 function sleep(ms: number): Promise<void> {

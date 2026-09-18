@@ -233,8 +233,7 @@ The `mcp-server/src` → `mcp-server/Source (agent and database)` rename (not ma
 
 Date: 17 September 2026
 Time spent: ~7.5 hours elapsed (first work ~09:55, last commit 17:23), covering both the Claude Code sessions and my own edits/commits in between
-Rough tokens used:  If you're asking for the token count, the important numbers are:
-
+Rough tokens used: ]
 Sonnet 5: 11.3k input + 182.2k output
 Opus 5: 8 input + 4.5k output
 Haiku 4.5: 2.2k input + 17 output
@@ -301,3 +300,34 @@ Not available.
 **Notes / issues:**
 - `frontend/` exists conceptually in the request but has nothing to contain yet, since this project has no UI code — left uncreated rather than adding an empty placeholder.
 - The pre-existing build output under `compiled-debtcollector-telegram-system/` was already git-tracked (unusual for generated output); it was preserved as a renamed snapshot rather than deleted, per instructions, but going forward `compiled/` is gitignored so new builds won't be tracked.
+
+## 2026-09-18
+### Task: Fix broken Telegram bot after manual reorg
+
+**What I asked Claude Code to do:**
+"can you make the telegram thing work still" — the bot was broken.
+
+**What Claude Code did:**
+- Diagnosed that `npm run build` failed with `TS2307: Cannot find module` errors.
+- Root cause: the prior manual commit "modified files into folders" (c88146b) renamed `skills/debtCollector/` to `skills/skill/` but left three stale imports pointing at the old path: `agent/debtDraftAgent/debtDraftAgent.ts`, `agent/debtinfoAgent/debtinfoAgent.ts`, and `backend/telegram/poller.ts`.
+- Fixed all three import paths to `../../skills/skill/...`.
+- Rebuilt (`npm run build`, clean) and started the bot (`npm start`), confirmed the process stayed alive with no crash.
+
+**Files created/modified:**
+- agent/debtDraftAgent/debtDraftAgent.ts
+- agent/debtinfoAgent/debtinfoAgent.ts
+- backend/telegram/poller.ts
+
+**Result:**
+Build passes cleanly; bot runs and stays up as a background process. Not yet committed — left for the user to review and commit.
+
+**Testing / verification:**
+- `npx tsc`/`npm run build` — clean.
+- Started bot, confirmed process alive after ~8s with no errors beyond the expected experimental-SQLite warning.
+- Awaiting live Telegram message confirmation from the user.
+
+**Claude Code token usage:**
+Not available.
+
+**Notes / issues:**
+None.

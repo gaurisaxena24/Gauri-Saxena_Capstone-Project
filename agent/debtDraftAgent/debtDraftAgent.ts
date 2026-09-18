@@ -16,7 +16,7 @@ import {
   type TelegramMessage,
   type TelegramCallbackQuery,
 } from "../../backend/telegram/rawApi.js";
-import type { DebtContextJSON } from "../../skills/debtCollector/debtCollectorSkill/debtCollectorSkill.js";
+import type { DebtContextJSON } from "../../skills/skill/debtCollectorSkill/debtCollectorSkill.js";
 import {
   createDebtDraft,
   getDebtDraft,

@@ -12,7 +12,7 @@
  */
 
 import { tgSendMessage, type TelegramMessage } from "../../backend/telegram/rawApi.js";
-import { invokeDebtCollectorSkill } from "../../skills/debtCollector/debtCollectorSkill/debtCollectorSkill.js";
+import { invokeDebtCollectorSkill } from "../../skills/skill/debtCollectorSkill/debtCollectorSkill.js";
 import { startDebtDraftReview } from "../debtDraftAgent/debtDraftAgent.js";
 
 const FORM_TEXT = `💸 UNHINGED DEBT COLLECTOR
