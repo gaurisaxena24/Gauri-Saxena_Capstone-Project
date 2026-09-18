@@ -87,3 +87,7 @@ export function saveDraftMessage(
 export function markPaid(debtId: number, status: DebtStatus = "PAID"): ExpenseDebt | undefined {
   return debtSkill.markPaid(debtId, status);
 }
+
+export function removeDebt(debtId: number): boolean {
+  return debtSkill.removeDebt(debtId);
+}

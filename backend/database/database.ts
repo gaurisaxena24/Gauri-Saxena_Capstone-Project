@@ -20,8 +20,16 @@ import { mkdirSync } from "node:fs";
 import { findProjectRoot } from "../paths.js";
 
 // data/ lives at the project root, found by walking up to package.json —
-// works whether this runs from source (tsx) or compiled output.
-const DATA_DIR = resolve(findProjectRoot(import.meta.url), "data");
+// works whether this runs from source (tsx) or compiled output. On Railway,
+// the project root is rebuilt from scratch on every deploy/restart (a fresh
+// container filesystem), so anything stored there is wiped unless a Railway
+// Volume is attached — Railway sets RAILWAY_VOLUME_MOUNT_PATH at runtime
+// when one is, and that's where the real, persistent data must live
+// instead. Local dev has no such volume, so this env var is unset and the
+// path resolves exactly as before — no behavior change outside Railway.
+const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH
+  ? resolve(process.env.RAILWAY_VOLUME_MOUNT_PATH)
+  : resolve(findProjectRoot(import.meta.url), "data");
 const DB_PATH = resolve(DATA_DIR, "debts.db");
 export const UPLOADS_DIR = resolve(DATA_DIR, "uploads");
 
@@ -628,6 +636,21 @@ export function setDebtStatus(id: number, status: DebtStatus): ExpenseDebt | und
     .prepare(`UPDATE expense_debts SET status = ?, paid_at = ? WHERE id = ?`)
     .run(status, status === "PAID" ? new Date().toISOString() : null, id);
   return getExpenseDebt(id);
+}
+
+/**
+ * Deletes one debt ("send request") and only that debt — its own send-history rows in
+ * `reminders`, and the `expense_debts` row itself. Never touches `people` or `expenses`; the
+ * person and the underlying expense this debt was drafted against are always left exactly as
+ * they were. Returns false if the debt didn't exist (nothing to delete), true otherwise.
+ */
+export function deleteExpenseDebt(id: number): boolean {
+  const database = getDb();
+  const existing = getExpenseDebt(id);
+  if (!existing) return false;
+  database.prepare(`DELETE FROM reminders WHERE debt_id = ?`).run(id);
+  database.prepare(`DELETE FROM expense_debts WHERE id = ?`).run(id);
+  return true;
 }
 
 export interface DashboardStats {

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { ApiError, getDebt, markDebtPaid, type DebtDetail as DebtDetailData } from "../api/client";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { ApiError, getDebt, markDebtPaid, removeDebt, type DebtDetail as DebtDetailData } from "../api/client";
 import { formatCurrency, formatDate } from "../lib/format";
 import { StatusBadge } from "../components/StatusBadge";
 import { ToneBadge } from "../components/ToneBadge";
@@ -8,9 +8,11 @@ import { ErrorBanner } from "../components/ErrorBanner";
 
 export function DebtDetail() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const [debt, setDebt] = useState<DebtDetailData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [markingPaid, setMarkingPaid] = useState(false);
+  const [removing, setRemoving] = useState(false);
 
   function load() {
     setError(null);
@@ -31,6 +33,24 @@ export function DebtDetail() {
       setError(err instanceof ApiError ? err.message : "Couldn't update status.");
     } finally {
       setMarkingPaid(false);
+    }
+  }
+
+  async function handleRemove() {
+    if (!debt) return;
+    const label = debt.personName
+      ? `${debt.personName} — ${debt.expenseMerchant ?? debt.expenseCategory ?? "expense"} (${formatCurrency(debt.amount)})`
+      : "this invalid request";
+    if (!window.confirm(`Remove this send request?\n\n${label}\n\nThis only removes the request — the person and expense are not affected.`)) {
+      return;
+    }
+    setRemoving(true);
+    try {
+      await removeDebt(debt.id);
+      navigate("/debts");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't remove this request.");
+      setRemoving(false);
     }
   }
 
@@ -143,15 +163,26 @@ export function DebtDetail() {
         </div>
       )}
 
-      {debt.status === "UNPAID" && (
+      <div className="mt-6 flex flex-wrap gap-2">
+        {debt.status === "UNPAID" && (
+          <button
+            type="button"
+            onClick={handleMarkPaid}
+            disabled={markingPaid}
+            className="rounded-full border border-border px-5 py-2 text-sm font-medium text-ink hover:border-ink/40 disabled:opacity-40"
+          >
+            {markingPaid ? "Updating…" : "Mark as paid"}
+          </button>
+        )}
         <button
-          onClick={handleMarkPaid}
-          disabled={markingPaid}
-          className="mt-6 rounded-full border border-border px-5 py-2 text-sm font-medium text-ink hover:border-ink/40 disabled:opacity-40"
+          type="button"
+          onClick={handleRemove}
+          disabled={removing}
+          className="rounded-full border border-border px-5 py-2 text-sm font-medium text-ink-soft hover:border-[var(--color-danger)]/40 hover:text-[var(--color-danger)] disabled:opacity-40"
         >
-          {markingPaid ? "Updating…" : "Mark as paid"}
+          {removing ? "Removing…" : "Remove request"}
         </button>
-      )}
+      </div>
     </div>
   );
 }

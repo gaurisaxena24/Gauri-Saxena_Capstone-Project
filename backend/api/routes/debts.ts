@@ -197,3 +197,13 @@ debtsRouter.post("/:id/paid", (req, res) => {
   }
   res.json(toDebtPayload(updated));
 });
+
+/** Removes this debt ("send request") and its own send-history only — never the person or expense it references. */
+debtsRouter.delete("/:id", (req, res) => {
+  const removed = agent.removeDebt(Number(req.params.id));
+  if (!removed) {
+    res.status(404).json({ error: "Debt not found." });
+    return;
+  }
+  res.status(204).end();
+});
