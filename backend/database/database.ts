@@ -461,6 +461,21 @@ export function listExpenses(limit = 100): Expense[] {
     .all(limit) as unknown as Expense[];
 }
 
+/**
+ * Deletes one expense and only that expense — never `people`, never `expense_debts`. The real
+ * foreign key on `expense_debts.expense_id` means SQLite itself refuses this delete while any
+ * debt still references the expense (the API checks for that first and returns a friendly error
+ * rather than letting the constraint failure surface). Returns the deleted row's `image_path` (so
+ * the caller can clean up the uploaded file) or undefined if the expense didn't exist.
+ */
+export function deleteExpense(id: number): { imagePath: string | null } | undefined {
+  const database = getDb();
+  const existing = getExpense(id);
+  if (!existing) return undefined;
+  database.prepare(`DELETE FROM expenses WHERE id = ?`).run(id);
+  return { imagePath: existing.image_path };
+}
+
 /** Lets the user correct extracted (or manually-entered) fields before attaching a person/debt. */
 export function updateExpense(
   id: number,

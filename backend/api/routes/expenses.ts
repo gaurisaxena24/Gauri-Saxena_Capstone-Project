@@ -182,3 +182,30 @@ expensesRouter.patch("/:id", (req, res) => {
 
   res.json(toExpensePayload(updated!));
 });
+
+/**
+ * Removes this expense and only this expense — never the person. The database itself enforces
+ * that no debt can reference a missing expense (a real foreign key), so a debt still drafted
+ * against this expense blocks the delete with a clear message rather than a raw DB error —
+ * remove those debts first (via the existing debt-remove action), then this expense can go.
+ * Best-effort deletes the uploaded image file, if any.
+ */
+expensesRouter.delete("/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  const attachedDebts = debtSkill.getDebtsByExpense(id);
+  if (attachedDebts.length > 0) {
+    res.status(409).json({
+      error: `This expense has ${attachedDebts.length} debt(s) still attached. Remove ${
+        attachedDebts.length === 1 ? "it" : "them"
+      } first, then you can delete this expense.`,
+    });
+    return;
+  }
+  const removed = agent.removeExpense(id);
+  if (!removed) {
+    res.status(404).json({ error: "Expense not found." });
+    return;
+  }
+  if (removed.imagePath) await unlink(removed.imagePath).catch(() => {});
+  res.status(204).end();
+});

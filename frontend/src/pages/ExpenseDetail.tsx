@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { getExpense, type Expense } from "../api/client";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { getExpense, removeExpense, type Expense } from "../api/client";
 import { formatCurrency, formatDate } from "../lib/format";
 import { ErrorBanner } from "../components/ErrorBanner";
 
@@ -11,9 +11,11 @@ const SOURCE_LABEL: Record<Expense["source"], string> = {
 
 export function ExpenseDetail() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const [expense, setExpense] = useState<(Expense & { debtIds: number[] }) | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [noteExpanded, setNoteExpanded] = useState(false);
+  const [removing, setRemoving] = useState(false);
 
   function load() {
     setError(null);
@@ -23,6 +25,28 @@ export function ExpenseDetail() {
   }
 
   useEffect(load, [id]);
+
+  async function handleRemove() {
+    if (!expense) return;
+    const label = expense.merchant ?? expense.category ?? "this expense";
+    if (expense.debtIds.length > 0) {
+      window.alert(
+        `This expense still has ${expense.debtIds.length} debt(s) drafted from it. Remove ${
+          expense.debtIds.length === 1 ? "it" : "them"
+        } first (below), then you can delete this expense.`
+      );
+      return;
+    }
+    if (!window.confirm(`Remove ${label} (${formatCurrency(expense.total)})?\n\nThis does not affect any person.`)) return;
+    setRemoving(true);
+    try {
+      await removeExpense(expense.id);
+      navigate("/expenses");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't remove this expense.");
+      setRemoving(false);
+    }
+  }
 
   if (error) return <ErrorBanner message={error} onRetry={load} />;
   if (!expense) return null;
@@ -151,6 +175,15 @@ export function ExpenseDetail() {
           </div>
         </div>
       )}
+
+      <button
+        type="button"
+        onClick={handleRemove}
+        disabled={removing}
+        className="mt-6 rounded-full border border-border px-5 py-2 text-sm font-medium text-ink-soft hover:border-[var(--color-danger)]/40 hover:text-[var(--color-danger)] disabled:opacity-40"
+      >
+        {removing ? "Removing…" : "Remove expense"}
+      </button>
     </div>
   );
 }

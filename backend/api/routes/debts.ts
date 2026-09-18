@@ -23,6 +23,8 @@ function toDebtPayload(debt: ExpenseDebt) {
     expenseId: debt.expense_id,
     personId: debt.person_id,
     personName: person?.name ?? null,
+    personExists: Boolean(person),
+    expenseExists: Boolean(expense),
     amount: debt.amount,
     currency: debt.currency,
     status: debt.status,

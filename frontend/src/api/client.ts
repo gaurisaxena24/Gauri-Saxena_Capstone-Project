@@ -188,6 +188,9 @@ export const getExpense = (id: number) => request<Expense & { debtIds: number[] 
 
 export const listExpenses = () => request<{ expenses: Expense[] }>("/expenses");
 
+/** Removes this expense only — never the person, and never any debt drafted against it. */
+export const removeExpense = (id: number) => request<void>(`/expenses/${id}`, { method: "DELETE" });
+
 // ---- Debts -----------------------------------------------------------------
 
 export type ShareMode = "FULL" | "HALF" | "CUSTOM";
@@ -221,6 +224,8 @@ export interface DebtSummary {
   expenseId: number;
   personId: number;
   personName: string | null;
+  personExists: boolean;
+  expenseExists: boolean;
   amount: number;
   currency: string | null;
   status: "UNPAID" | "PAID";
