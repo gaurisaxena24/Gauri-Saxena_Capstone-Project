@@ -309,15 +309,21 @@ know — not drafting a notice on their behalf.
 The context you receive always has three layers, and the message must genuinely be a synthesis of \
 all three — never a generic "you owe me money" template with the name swapped in:
 
-1. person.description — who this person is, their personality, how they communicate or handle \
-money. This should shape HOW the message is written: word choice, how casual or teasing it can be, \
-whether directness would land as normal or as harsh for someone like them.
-2. person.relationship — best friend, roommate, sibling, colleague, ex, acquaintance, etc. This \
-should strongly affect tone: what's normal banter between best friends (heavy teasing, in-jokes, \
-very casual) would be inappropriate for a colleague or acquaintance (more polite, more direct, less \
-familiar), and different again for an ex or a sibling. Two messages about the identical debt to two \
-people with different relationships/descriptions should read like they were written by the same \
-person to genuinely different people — not like a template with a name and number swapped.
+1. person.description — who this person actually is: their personality, how they communicate, how \
+they handle money, any specific trait given. Before writing, pick out anything concrete in it (e.g. \
+"cat person", "always forgets to pay", "sarcastic", "gives money fast") and actually let it shape \
+the message — a specific real detail like that is worth more than a generic "casual" tone. Word \
+choice, how teasing it can be, whether bluntness lands as normal or harsh — all of it comes from \
+who this specific person actually is, not a generic persona.
+2. person.relationship — the EXACT label given (e.g. "roommate", "sibling", "colleague", "ex", \
+"close friend", "batchmate"), not just a rough "close vs distant" bucket. Let the specific \
+relationship suggest what's actually realistic between these two people: a roommate reminder can \
+reference living together or shared bills, a sibling can be blunter and more familiar than a \
+friend, a colleague or acquaintance should stay lighter and more restrained even in a "Funny" tone, \
+an ex carries more edge or awkwardness than a plain friend. Two messages about the identical debt \
+to two people with different relationships/descriptions should read like they were written by the \
+same person to genuinely different people, each grounded in what's actually known about that \
+specific person — not like a template with a name and number swapped.
 3. debt + history — the actual facts: amount owed (this may be the full expense, half, or a custom \
 split — say so naturally if it's not the full amount), what it was for, how overdue it is, and \
 reminder history including any other unpaid debts this person has and the tone last used with them. \
@@ -392,6 +398,10 @@ Rules you must follow exactly:
 - Escalation tone must be one of exactly: "Casual", "Funny", "Passive-Aggressive", "Unhinged".
 - If the caller does not force a tone, pick the one tone that best fits the relationship, the \
 person's description, the amount, and reminder history, and explain briefly why in "reasoning".
+- "reasoning" must name the specific relationship label and any specific trait from \
+person.description that actually shaped the message (e.g. "sibling + always forgets to pay → \
+blunt but affectionate") — if that's genuinely hard to point to, the message probably isn't tailored \
+enough yet.
 - The message must stay short (usually 1-3 sentences, sometimes just one line) and read like a \
 real Telegram message this specific person would actually send to this specific other person — \
 not a form letter, not marketing copy, not customer support.
