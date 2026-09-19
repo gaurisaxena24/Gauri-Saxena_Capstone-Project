@@ -20,18 +20,18 @@ export function logReminder(input: {
   tone: string | null;
   status: ReminderStatus;
   telegramMessageId?: string | number | null;
-}): Reminder {
+}): Promise<Reminder> {
   return recordReminder(input);
 }
 
-export function historyForDebt(debtId: number): Reminder[] {
+export function historyForDebt(debtId: number): Promise<Reminder[]> {
   return getRemindersForDebt(debtId);
 }
 
-export function historyForPerson(personId: number): Reminder[] {
+export function historyForPerson(personId: number): Promise<Reminder[]> {
   return getRemindersForPerson(personId);
 }
 
-export function allReminders(limit?: number): Reminder[] {
+export function allReminders(limit?: number): Promise<Reminder[]> {
   return listReminders(limit);
 }

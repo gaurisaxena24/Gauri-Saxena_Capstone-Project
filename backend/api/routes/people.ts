@@ -34,11 +34,12 @@ function toPersonPayload(p: Person) {
   };
 }
 
-peopleRouter.get("/", (_req, res) => {
-  res.json({ people: profileSkill.listPeople().map(toPersonSummary) });
+peopleRouter.get("/", async (_req, res) => {
+  const people = await profileSkill.listPeople();
+  res.json({ people: people.map(toPersonSummary) });
 });
 
-peopleRouter.post("/", (req, res) => {
+peopleRouter.post("/", async (req, res) => {
   const { name, telegramUsername, relationship, notes, phoneNumber } = req.body ?? {};
   if (!name?.trim() || !telegramUsername?.trim()) {
     res.status(400).json({ error: "Name and Telegram username are required." });
@@ -46,7 +47,7 @@ peopleRouter.post("/", (req, res) => {
   }
 
   try {
-    const person = profileSkill.addPerson({
+    const person = await profileSkill.addPerson({
       name: name.trim(),
       telegramUsername,
       relationship: relationship?.trim() || undefined,
@@ -55,8 +56,9 @@ peopleRouter.post("/", (req, res) => {
     });
     res.status(201).json(toPersonPayload(person));
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes("UNIQUE")) {
+    // Postgres reports a unique-violation as error code 23505 (was a "UNIQUE constraint failed"
+    // message match under the previous SQLite driver).
+    if ((error as { code?: string } | null)?.code === "23505") {
       res.status(409).json({ error: "Someone with that Telegram username already exists." });
       return;
     }
@@ -64,42 +66,45 @@ peopleRouter.post("/", (req, res) => {
   }
 });
 
-function buildPersonDetail(person: Person) {
-  const debts = debtSkill.getDebtsByPerson(person.id).map((d) => {
-    const expense = debtSkill.getExpenseById(d.expense_id);
-    return {
-      id: d.id,
-      expenseId: d.expense_id,
-      amount: d.amount,
-      status: d.status,
-      createdAt: d.created_at,
-      paidAt: d.paid_at,
-      merchant: expense?.merchant ?? null,
-      category: expense?.category ?? null,
-    };
-  });
+async function buildPersonDetail(person: Person) {
+  const debtRows = await debtSkill.getDebtsByPerson(person.id);
+  const debts = await Promise.all(
+    debtRows.map(async (d) => {
+      const expense = await debtSkill.getExpenseById(d.expense_id);
+      return {
+        id: d.id,
+        expenseId: d.expense_id,
+        amount: d.amount,
+        status: d.status,
+        createdAt: d.created_at,
+        paidAt: d.paid_at,
+        merchant: expense?.merchant ?? null,
+        category: expense?.category ?? null,
+      };
+    })
+  );
 
   return {
     ...toPersonPayload(person),
     debts,
-    reminders: reminderSkill.historyForPerson(person.id),
+    reminders: await reminderSkill.historyForPerson(person.id),
   };
 }
 
-peopleRouter.get("/:id", (req, res) => {
+peopleRouter.get("/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const person = profileSkill.findPersonById(id);
+  const person = await profileSkill.findPersonById(id);
   if (!person) {
     res.status(404).json({ error: "Person not found." });
     return;
   }
-  res.json(buildPersonDetail(person));
+  res.json(await buildPersonDetail(person));
 });
 
-peopleRouter.patch("/:id", (req, res) => {
+peopleRouter.patch("/:id", async (req, res) => {
   const id = Number(req.params.id);
   const { name, relationship, notes, phoneNumber } = req.body ?? {};
-  const updated = profileSkill.editPerson(id, {
+  const updated = await profileSkill.editPerson(id, {
     name: name !== undefined ? name : undefined,
     relationship: relationship !== undefined ? relationship : undefined,
     notes: notes !== undefined ? notes : undefined,
@@ -109,7 +114,7 @@ peopleRouter.patch("/:id", (req, res) => {
     res.status(404).json({ error: "Person not found." });
     return;
   }
-  res.json(buildPersonDetail(updated));
+  res.json(await buildPersonDetail(updated));
 });
 
 /**
@@ -118,9 +123,9 @@ peopleRouter.patch("/:id", (req, res) => {
  * against them blocks the delete with a clear message rather than a raw DB error — remove those
  * debts first (via the existing debt-remove action), then this person can go.
  */
-peopleRouter.delete("/:id", (req, res) => {
+peopleRouter.delete("/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const attachedDebts = debtSkill.getDebtsByPerson(id);
+  const attachedDebts = await debtSkill.getDebtsByPerson(id);
   if (attachedDebts.length > 0) {
     res.status(409).json({
       error: `${attachedDebts.length} debt(s) are still attached to this person. Remove ${
@@ -129,7 +134,7 @@ peopleRouter.delete("/:id", (req, res) => {
     });
     return;
   }
-  const removed = agent.removePerson(id);
+  const removed = await agent.removePerson(id);
   if (!removed) {
     res.status(404).json({ error: "Person not found." });
     return;

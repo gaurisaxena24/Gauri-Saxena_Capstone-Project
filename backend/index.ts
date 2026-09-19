@@ -25,6 +25,7 @@ import {
 } from "./tools/getDraftStatus.js";
 import { startTelegramPoller } from "./telegram/poller.js";
 import { startApiServer } from "./api/server.js";
+import { ensureDatabaseReady } from "./database/database.js";
 
 const server = new McpServer({
   name: "unhinged-debt-collector-mcp-server",
@@ -94,6 +95,14 @@ function shouldPollTelegram(): boolean {
 }
 
 async function main() {
+  try {
+    await ensureDatabaseReady();
+    console.log("[db] Connected to Postgres and schema is up to date.");
+  } catch (error) {
+    console.error("[db] Failed to connect to Postgres — check DATABASE_URL:", error);
+    process.exit(1);
+  }
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   if (shouldPollTelegram()) {

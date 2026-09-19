@@ -2,7 +2,7 @@ import multer from "multer";
 import { mkdirSync } from "node:fs";
 import { extname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { UPLOADS_DIR } from "../database/database.js";
+import { UPLOADS_DIR } from "../paths.js";
 
 mkdirSync(UPLOADS_DIR, { recursive: true });
 

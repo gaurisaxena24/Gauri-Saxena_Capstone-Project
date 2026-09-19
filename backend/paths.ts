@@ -17,3 +17,15 @@ export function findProjectRoot(fromFileUrl: string): string {
   }
   throw new Error(`Could not locate project root (package.json) above ${fromFileUrl}`);
 }
+
+// Uploaded expense images are still plain files on disk — Postgres now holds the structured data
+// (people/expenses/debts/reminders), but binary image uploads don't belong in a SQL column. On
+// Railway, the project root is rebuilt from scratch on every deploy/restart (a fresh container
+// filesystem), so anything stored there is wiped unless a Railway Volume is attached — Railway
+// sets RAILWAY_VOLUME_MOUNT_PATH at runtime when one is, and that's where uploads must live
+// instead. Local dev has no such volume, so this env var is unset and the path resolves exactly
+// as before.
+const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH
+  ? resolve(process.env.RAILWAY_VOLUME_MOUNT_PATH)
+  : resolve(findProjectRoot(import.meta.url), "data");
+export const UPLOADS_DIR = resolve(DATA_DIR, "uploads");

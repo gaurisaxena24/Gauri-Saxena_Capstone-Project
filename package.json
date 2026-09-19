@@ -11,7 +11,8 @@
     "build": "tsc && npm --prefix frontend install && npm --prefix frontend run build",
     "start": "node compiled/debt-collector-telegram-system/backend/index.js",
     "server:dev": "tsx watch backend/index.ts",
-    "dev": "concurrently -n backend,frontend -c blue,green \"npm:server:dev\" \"npm --prefix frontend run dev\""
+    "dev": "concurrently -n backend,frontend -c blue,green \"npm:server:dev\" \"npm --prefix frontend run dev\"",
+    "migrate:sqlite-to-postgres": "tsx scripts/migrate-sqlite-to-postgres.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
@@ -19,10 +20,12 @@
     "@types/express": "^5.0.6",
     "@types/multer": "^2.2.0",
     "@types/node": "^22.10.5",
+    "@types/pg": "^8.23.1",
     "cors": "^2.8.6",
     "dotenv": "^16.4.5",
     "express": "^5.2.1",
     "multer": "^2.4.0",
+    "pg": "^8.23.0",
     "tesseract.js": "^7.0.0",
     "typescript": "^5.7.3",
     "zod": "^3.23.8"

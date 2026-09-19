@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { UPLOADS_DIR } from "../database/database.js";
+import { UPLOADS_DIR } from "../paths.js";
 import { isGroqConfigured } from "../ai/groqClient.js";
 import { findProjectRoot } from "../paths.js";
 import { authRouter } from "./routes/auth.js";

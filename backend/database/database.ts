@@ -1,52 +1,191 @@
 /**
- * SQLite persistence.
+ * PostgreSQL persistence.
  *
- * Uses Node's built-in node:sqlite (available without adding a dependency)
- * rather than a third-party driver.
+ * Was previously `node:sqlite` writing to a local file — that file lived on
+ * whatever disk the process happened to be running on, which on Railway
+ * meant a fresh, empty filesystem every redeploy/restart unless a Volume was
+ * attached (and in production, none was — see BUILD_LOG.md). A managed
+ * Postgres database removes that failure mode entirely: the data lives in
+ * its own service, independent of the backend container's lifecycle.
  *
- * Two generations of schema live in the same file:
+ * Two generations of schema live in the same database:
  *  - `debts` is the retired conversational Telegram flow's table. No code
- *    writes to it anymore, but its historical rows are kept — never dropped.
- *  - `people` / `expenses` / `expense_debts` / `reminders` power the web app's
- *    expense-tracking flow (manual entry or image upload → person → debt →
- *    AI reminder → Telegram), which is now the only way expenses/debts are
- *    created. `people` is extended additively (phone number, Telegram
- *    verification) rather than replaced.
+ *    writes to it anymore, but its historical rows (if any existed) are
+ *    preserved by the migration script — never dropped.
+ *  - `people` / `expenses` / `expense_debts` / `reminders` power the web
+ *    app's expense-tracking flow (manual entry or image upload → person →
+ *    debt → AI reminder → Telegram), which is now the only way
+ *    expenses/debts are created. `people` is extended additively (phone
+ *    number, Telegram verification) rather than replaced.
+ *
+ * Every exported function here now returns a Promise — the synchronous
+ * `node:sqlite` API this replaced let every call site read like plain
+ * function calls, but `pg` is Promise-based (it talks to a real network
+ * service), so every caller up the chain (skills, routes, the Telegram
+ * poller) had to become `async`/`await` too. That ripple is intentional and
+ * complete, not partial.
  */
 
-import { DatabaseSync } from "node:sqlite";
-import { resolve } from "node:path";
-import { mkdirSync } from "node:fs";
-import { findProjectRoot } from "../paths.js";
+import { Pool } from "pg";
 
-// data/ lives at the project root, found by walking up to package.json —
-// works whether this runs from source (tsx) or compiled output. On Railway,
-// the project root is rebuilt from scratch on every deploy/restart (a fresh
-// container filesystem), so anything stored there is wiped unless a Railway
-// Volume is attached — Railway sets RAILWAY_VOLUME_MOUNT_PATH at runtime
-// when one is, and that's where the real, persistent data must live
-// instead. Local dev has no such volume, so this env var is unset and the
-// path resolves exactly as before — no behavior change outside Railway.
-const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH
-  ? resolve(process.env.RAILWAY_VOLUME_MOUNT_PATH)
-  : resolve(findProjectRoot(import.meta.url), "data");
-const DB_PATH = resolve(DATA_DIR, "debts.db");
-export const UPLOADS_DIR = resolve(DATA_DIR, "uploads");
+let pool: Pool | undefined;
 
-let db: DatabaseSync | undefined;
+function getPool(): Pool {
+  if (pool) return pool;
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error(
+      "DATABASE_URL is not set. Set it to a Postgres connection string (see .env.example)."
+    );
+  }
+  // Railway's internal Postgres URL isn't behind a proxy that needs SSL, but its public/external
+  // one (used from local dev) is — sslmode is negotiated automatically by most Postgres hosts via
+  // the connection string itself, but Railway's does not always encode it, so ssl is requested
+  // whenever the host isn't localhost and left off otherwise (so a local/dev Postgres without TLS
+  // still connects).
+  const isLocal = /localhost|127\.0\.0\.1/.test(connectionString);
+  pool = new Pool({
+    connectionString,
+    ssl: isLocal ? undefined : { rejectUnauthorized: false },
+  });
+  return pool;
+}
 
-/** Adds a nullable column to an existing table if it isn't already there. Safe to call every startup. */
-function addColumnIfMissing(
-  database: DatabaseSync,
-  table: string,
-  column: string,
-  definition: string
-): void {
-  const existing = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{
-    name: string;
-  }>;
-  if (existing.some((c) => c.name === column)) return;
-  database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+let schemaReady: Promise<void> | undefined;
+
+/** Idempotent, purely additive schema setup — safe to run on every startup, never drops or truncates. */
+function ensureSchema(): Promise<void> {
+  if (schemaReady) return schemaReady;
+  schemaReady = (async () => {
+    const db = getPool();
+
+    // Original Telegram-only flow's table — schema and rows untouched.
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS debts (
+          id SERIAL PRIMARY KEY,
+          name TEXT NOT NULL,
+          amount DOUBLE PRECISION NOT NULL,
+          reason TEXT NOT NULL,
+          overdue_period TEXT NOT NULL,
+          relationship TEXT NOT NULL,
+          prior_reminder BOOLEAN NOT NULL,
+          context TEXT,
+          tone TEXT,
+          created_at TEXT NOT NULL
+      );
+    `);
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS people (
+          id SERIAL PRIMARY KEY,
+          name TEXT NOT NULL,
+          telegram_username TEXT NOT NULL UNIQUE,
+          relationship TEXT,
+          created_at TEXT NOT NULL
+      );
+    `);
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS telegram_contacts (
+          telegram_username TEXT PRIMARY KEY,
+          chat_id TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL
+      );
+    `);
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS users (
+          id SERIAL PRIMARY KEY,
+          telegram_username TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL,
+          last_login_at TEXT NOT NULL
+      );
+    `);
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS expenses (
+          id SERIAL PRIMARY KEY,
+          source TEXT NOT NULL,
+          merchant TEXT,
+          expense_date TEXT,
+          total DOUBLE PRECISION NOT NULL,
+          currency TEXT,
+          tax DOUBLE PRECISION,
+          tip DOUBLE PRECISION,
+          category TEXT,
+          payment_method TEXT,
+          transaction_reference TEXT,
+          description TEXT,
+          line_items_json TEXT,
+          visible_names_json TEXT,
+          image_path TEXT,
+          raw_extraction_json TEXT,
+          created_at TEXT NOT NULL
+      );
+    `);
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS expense_debts (
+          id SERIAL PRIMARY KEY,
+          expense_id INTEGER NOT NULL REFERENCES expenses(id),
+          person_id INTEGER NOT NULL REFERENCES people(id),
+          amount DOUBLE PRECISION NOT NULL,
+          currency TEXT,
+          status TEXT NOT NULL DEFAULT 'UNPAID',
+          message TEXT,
+          tone TEXT,
+          message_edited INTEGER NOT NULL DEFAULT 0,
+          context_json TEXT,
+          created_at TEXT NOT NULL,
+          paid_at TEXT
+      );
+    `);
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS reminders (
+          id SERIAL PRIMARY KEY,
+          debt_id INTEGER NOT NULL REFERENCES expense_debts(id),
+          person_id INTEGER NOT NULL REFERENCES people(id),
+          message TEXT NOT NULL,
+          tone TEXT,
+          status TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          sent_at TEXT,
+          telegram_message_id TEXT
+      );
+    `);
+
+    // people: extended additively for phone + real Telegram verification.
+    await db.query(`ALTER TABLE people ADD COLUMN IF NOT EXISTS notes TEXT`);
+    await db.query(`ALTER TABLE people ADD COLUMN IF NOT EXISTS phone_number TEXT`);
+    await db.query(`ALTER TABLE people ADD COLUMN IF NOT EXISTS telegram_user_id TEXT`);
+    await db.query(`ALTER TABLE people ADD COLUMN IF NOT EXISTS telegram_chat_id TEXT`);
+    await db.query(
+      `ALTER TABLE people ADD COLUMN IF NOT EXISTS telegram_verified INTEGER NOT NULL DEFAULT 0`
+    );
+    await db.query(`ALTER TABLE people ADD COLUMN IF NOT EXISTS verification_code TEXT`);
+    await backfillVerificationCodes(db);
+
+    // How much of the expense this debt covers, plus optional context the user
+    // supplies when creating it — both feed the AI reminder's social context.
+    await db.query(`ALTER TABLE expense_debts ADD COLUMN IF NOT EXISTS share_mode TEXT`);
+    await db.query(`ALTER TABLE expense_debts ADD COLUMN IF NOT EXISTS additional_context TEXT`);
+    await db.query(`ALTER TABLE expense_debts ADD COLUMN IF NOT EXISTS desired_action TEXT`);
+    // Which specific bill item(s) (if any) this particular debt covers — e.g. [{"name":"Chicken
+    // Biryani","amount":450}]. Set only when the debt was built from an itemized bill via the
+    // item-selection UI; null for a flat manual amount or a non-itemized screenshot. Feeds the AI
+    // reminder ("your share of the biryani") without ever inventing items beyond what's stored here.
+    await db.query(`ALTER TABLE expense_debts ADD COLUMN IF NOT EXISTS selected_items_json TEXT`);
+
+    // Itemized-bill facts extracted alongside the existing tax/tip fields — kept distinct from
+    // `total` (the grand total) so tax/service/discount can be applied to a partial item selection
+    // rather than assumed to already be baked into whatever the person owes.
+    await db.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS subtotal DOUBLE PRECISION`);
+    await db.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS service_charge DOUBLE PRECISION`);
+    await db.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS discount DOUBLE PRECISION`);
+    await db.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS extraction_confidence DOUBLE PRECISION`);
+  })();
+  return schemaReady;
 }
 
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O/1/I/L — easy to type back
@@ -58,142 +197,27 @@ function generateVerificationCode(): string {
 }
 
 /** Gives any pre-existing person (created before verification codes existed) a code too. */
-function backfillVerificationCodes(database: DatabaseSync): void {
-  const missing = database
-    .prepare(`SELECT id FROM people WHERE verification_code IS NULL`)
-    .all() as Array<{ id: number }>;
+async function backfillVerificationCodes(db: Pool): Promise<void> {
+  const { rows: missing } = await db.query<{ id: number }>(
+    `SELECT id FROM people WHERE verification_code IS NULL`
+  );
   for (const { id } of missing) {
-    database.prepare(`UPDATE people SET verification_code = ? WHERE id = ?`).run(generateVerificationCode(), id);
+    await db.query(`UPDATE people SET verification_code = $1 WHERE id = $2`, [generateVerificationCode(), id]);
   }
 }
 
-function getDb(): DatabaseSync {
-  if (db) return db;
-  mkdirSync(DATA_DIR, { recursive: true });
-  db = new DatabaseSync(DB_PATH);
+async function getDb(): Promise<Pool> {
+  await ensureSchema();
+  return getPool();
+}
 
-  // Original Telegram-only flow's table — schema and rows untouched.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS debts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        amount REAL NOT NULL,
-        reason TEXT NOT NULL,
-        overdue_period TEXT NOT NULL,
-        relationship TEXT NOT NULL,
-        prior_reminder BOOLEAN NOT NULL,
-        context TEXT,
-        tone TEXT,
-        created_at TEXT NOT NULL
-    );
-  `);
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS people (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        telegram_username TEXT NOT NULL UNIQUE,
-        relationship TEXT,
-        created_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS telegram_contacts (
-        telegram_username TEXT PRIMARY KEY,
-        chat_id TEXT NOT NULL,
-        last_seen_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        telegram_username TEXT NOT NULL UNIQUE,
-        created_at TEXT NOT NULL,
-        last_login_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS expenses (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source TEXT NOT NULL,
-        merchant TEXT,
-        expense_date TEXT,
-        total REAL NOT NULL,
-        currency TEXT,
-        tax REAL,
-        tip REAL,
-        category TEXT,
-        payment_method TEXT,
-        transaction_reference TEXT,
-        description TEXT,
-        line_items_json TEXT,
-        visible_names_json TEXT,
-        image_path TEXT,
-        raw_extraction_json TEXT,
-        created_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS expense_debts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        expense_id INTEGER NOT NULL REFERENCES expenses(id),
-        person_id INTEGER NOT NULL REFERENCES people(id),
-        amount REAL NOT NULL,
-        currency TEXT,
-        status TEXT NOT NULL DEFAULT 'UNPAID',
-        message TEXT,
-        tone TEXT,
-        message_edited INTEGER NOT NULL DEFAULT 0,
-        context_json TEXT,
-        created_at TEXT NOT NULL,
-        paid_at TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS reminders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        debt_id INTEGER NOT NULL REFERENCES expense_debts(id),
-        person_id INTEGER NOT NULL REFERENCES people(id),
-        message TEXT NOT NULL,
-        tone TEXT,
-        status TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        sent_at TEXT,
-        telegram_message_id TEXT
-    );
-  `);
-
-  // people: extended additively for phone + real Telegram verification.
-  addColumnIfMissing(db, "people", "notes", "TEXT");
-  addColumnIfMissing(db, "people", "phone_number", "TEXT");
-  addColumnIfMissing(db, "people", "telegram_user_id", "TEXT");
-  addColumnIfMissing(db, "people", "telegram_chat_id", "TEXT");
-  addColumnIfMissing(db, "people", "telegram_verified", "INTEGER NOT NULL DEFAULT 0");
-  addColumnIfMissing(db, "people", "verification_code", "TEXT");
-  backfillVerificationCodes(db);
-
-  // How much of the expense this debt covers, plus optional context the user
-  // supplies when creating it — both feed the AI reminder's social context.
-  addColumnIfMissing(db, "expense_debts", "share_mode", "TEXT");
-  addColumnIfMissing(db, "expense_debts", "additional_context", "TEXT");
-  addColumnIfMissing(db, "expense_debts", "desired_action", "TEXT");
-  // Which specific bill item(s) (if any) this particular debt covers — e.g. [{"name":"Chicken
-  // Biryani","amount":450}]. Set only when the debt was built from an itemized bill via the
-  // item-selection UI; null for a flat manual amount or a non-itemized screenshot. Feeds the AI
-  // reminder ("your share of the biryani") without ever inventing items beyond what's stored here.
-  addColumnIfMissing(db, "expense_debts", "selected_items_json", "TEXT");
-
-  // Itemized-bill facts extracted alongside the existing tax/tip fields — kept distinct from
-  // `total` (the grand total) so tax/service/discount can be applied to a partial item selection
-  // rather than assumed to already be baked into whatever the person owes.
-  addColumnIfMissing(db, "expenses", "subtotal", "REAL");
-  addColumnIfMissing(db, "expenses", "service_charge", "REAL");
-  addColumnIfMissing(db, "expenses", "discount", "REAL");
-  addColumnIfMissing(db, "expenses", "extraction_confidence", "REAL");
-
-  // Superseded by expenses/expense_debts (previous iteration of the web
-  // flow, before "expense" replaced "bill" as the core object). Both were
-  // introduced by this same web app and are empty of anything but already-
-  // cleaned-up test data, so dropping is safe.
-  db.exec(`DROP TABLE IF EXISTS bills`);
-  db.exec(`DROP TABLE IF EXISTS ai_keys`);
-
-  return db;
+/**
+ * Runs schema setup eagerly at process startup rather than waiting for the first incoming
+ * request to trigger it lazily — a bad or missing DATABASE_URL then fails loudly in the startup
+ * log instead of surfacing as a mysterious 500 on whatever request happens to arrive first.
+ */
+export async function ensureDatabaseReady(): Promise<void> {
+  await ensureSchema();
 }
 
 /** Strips a leading "@" and lowercases, so "@Rahul123", "rahul123" and "Rahul123" all match one contact. */
@@ -224,38 +248,38 @@ export interface PersonWithStats extends Person {
   open_debts: number;
 }
 
-export function createPerson(input: {
+export async function createPerson(input: {
   name: string;
   telegramUsername: string;
   relationship?: string;
   notes?: string;
   phoneNumber?: string;
-}): Person {
-  const database = getDb();
+}): Promise<Person> {
+  const database = await getDb();
   const created_at = new Date().toISOString();
   const username = normalizeUsername(input.telegramUsername);
-  const stmt = database.prepare(
+  const { rows } = await database.query<{ id: number }>(
     `INSERT INTO people (name, telegram_username, relationship, notes, phone_number, telegram_verified, verification_code, created_at)
-     VALUES (?, ?, ?, ?, ?, 0, ?, ?)`
+     VALUES ($1, $2, $3, $4, $5, 0, $6, $7) RETURNING id`,
+    [
+      input.name,
+      username,
+      input.relationship ?? null,
+      input.notes ?? null,
+      input.phoneNumber ?? null,
+      generateVerificationCode(),
+      created_at,
+    ]
   );
-  const result = stmt.run(
-    input.name,
-    username,
-    input.relationship ?? null,
-    input.notes ?? null,
-    input.phoneNumber ?? null,
-    generateVerificationCode(),
-    created_at
-  );
-  return getPerson(Number(result.lastInsertRowid))!;
+  return (await getPerson(rows[0].id))!;
 }
 
-export function updatePerson(
+export async function updatePerson(
   id: number,
   patch: Partial<{ name: string; relationship: string | null; notes: string | null; phoneNumber: string | null }>
-): Person | undefined {
-  const database = getDb();
-  const current = getPerson(id);
+): Promise<Person | undefined> {
+  const database = await getDb();
+  const current = await getPerson(id);
   if (!current) return undefined;
   const next = {
     name: patch.name ?? current.name,
@@ -263,65 +287,68 @@ export function updatePerson(
     notes: patch.notes !== undefined ? patch.notes : current.notes,
     phone_number: patch.phoneNumber !== undefined ? patch.phoneNumber : current.phone_number,
   };
-  database
-    .prepare(`UPDATE people SET name = ?, relationship = ?, notes = ?, phone_number = ? WHERE id = ?`)
-    .run(next.name, next.relationship, next.notes, next.phone_number, id);
+  await database.query(`UPDATE people SET name = $1, relationship = $2, notes = $3, phone_number = $4 WHERE id = $5`, [
+    next.name,
+    next.relationship,
+    next.notes,
+    next.phone_number,
+    id,
+  ]);
   return getPerson(id);
 }
 
 /**
  * Deletes one person and only that person. The real foreign keys on
- * `expense_debts.person_id`/`reminders.person_id` mean SQLite itself refuses this delete while
+ * `expense_debts.person_id`/`reminders.person_id` mean Postgres itself refuses this delete while
  * any debt still references the person — the API checks for that first and returns a friendly
  * message rather than letting the constraint failure surface. Returns true if deleted, false if
  * the person didn't exist.
  */
-export function deletePerson(id: number): boolean {
-  const database = getDb();
-  const existing = getPerson(id);
+export async function deletePerson(id: number): Promise<boolean> {
+  const database = await getDb();
+  const existing = await getPerson(id);
   if (!existing) return false;
-  database.prepare(`DELETE FROM people WHERE id = ?`).run(id);
+  await database.query(`DELETE FROM people WHERE id = $1`, [id]);
   return true;
 }
 
-export function getPersonByUsername(telegramUsername: string): Person | undefined {
-  const database = getDb();
+export async function getPersonByUsername(telegramUsername: string): Promise<Person | undefined> {
+  const database = await getDb();
   const username = normalizeUsername(telegramUsername);
-  return database
-    .prepare(`SELECT * FROM people WHERE telegram_username = ?`)
-    .get(username) as Person | undefined;
+  const { rows } = await database.query<Person>(`SELECT * FROM people WHERE telegram_username = $1`, [username]);
+  return rows[0];
 }
 
-export function getPerson(id: number): Person | undefined {
-  const database = getDb();
-  return database.prepare(`SELECT * FROM people WHERE id = ?`).get(id) as Person | undefined;
+export async function getPerson(id: number): Promise<Person | undefined> {
+  const database = await getDb();
+  const { rows } = await database.query<Person>(`SELECT * FROM people WHERE id = $1`, [id]);
+  return rows[0];
 }
 
 /** Finds an existing person by Telegram username, or creates one. Used when tagging an expense. */
-export function getOrCreatePerson(input: {
+export async function getOrCreatePerson(input: {
   name: string;
   telegramUsername: string;
   relationship?: string;
-}): Person {
-  const existing = getPersonByUsername(input.telegramUsername);
+}): Promise<Person> {
+  const existing = await getPersonByUsername(input.telegramUsername);
   if (existing) return existing;
   return createPerson(input);
 }
 
-export function listPeopleWithStats(): PersonWithStats[] {
-  const database = getDb();
-  return database
-    .prepare(
-      `SELECT
-         p.*,
-         COALESCE(SUM(CASE WHEN d.status = 'UNPAID' THEN d.amount ELSE 0 END), 0) AS total_owed,
-         COALESCE(SUM(CASE WHEN d.status = 'UNPAID' THEN 1 ELSE 0 END), 0) AS open_debts
-       FROM people p
-       LEFT JOIN expense_debts d ON d.person_id = p.id
-       GROUP BY p.id
-       ORDER BY p.name COLLATE NOCASE ASC`
-    )
-    .all() as unknown as PersonWithStats[];
+export async function listPeopleWithStats(): Promise<PersonWithStats[]> {
+  const database = await getDb();
+  const { rows } = await database.query<PersonWithStats>(
+    `SELECT
+       p.*,
+       COALESCE(SUM(CASE WHEN d.status = 'UNPAID' THEN d.amount ELSE 0 END), 0) AS total_owed,
+       COALESCE(SUM(CASE WHEN d.status = 'UNPAID' THEN 1 ELSE 0 END), 0) AS open_debts
+     FROM people p
+     LEFT JOIN expense_debts d ON d.person_id = p.id
+     GROUP BY p.id
+     ORDER BY p.name COLLATE "C" ASC`
+  );
+  return rows;
 }
 
 /**
@@ -329,26 +356,26 @@ export function listPeopleWithStats(): PersonWithStats[] {
  * a real incoming message from this exact username — the only honest proof
  * available via the Bot API (it can't look up an arbitrary username itself).
  */
-export function verifyPersonTelegram(
+export async function verifyPersonTelegram(
   telegramUsername: string,
   chatId: string | number,
   telegramUserId: string | number
-): void {
-  const database = getDb();
+): Promise<void> {
+  const database = await getDb();
   const username = normalizeUsername(telegramUsername);
-  database
-    .prepare(
-      `UPDATE people SET telegram_chat_id = ?, telegram_user_id = ?, telegram_verified = 1
-       WHERE telegram_username = ?`
-    )
-    .run(String(chatId), String(telegramUserId), username);
+  await database.query(
+    `UPDATE people SET telegram_chat_id = $1, telegram_user_id = $2, telegram_verified = 1
+     WHERE telegram_username = $3`,
+    [String(chatId), String(telegramUserId), username]
+  );
 }
 
-export function getPersonByVerificationCode(code: string): Person | undefined {
-  const database = getDb();
-  return database
-    .prepare(`SELECT * FROM people WHERE verification_code = ?`)
-    .get(code.trim().toUpperCase()) as Person | undefined;
+export async function getPersonByVerificationCode(code: string): Promise<Person | undefined> {
+  const database = await getDb();
+  const { rows } = await database.query<Person>(`SELECT * FROM people WHERE verification_code = $1`, [
+    code.trim().toUpperCase(),
+  ]);
+  return rows[0];
 }
 
 /**
@@ -356,17 +383,18 @@ export function getPersonByVerificationCode(code: string): Person | undefined {
  * username — the only option for a Telegram account with no public
  * @username set, which the Bot API otherwise gives no way to identify.
  */
-export function verifyPersonByCode(
+export async function verifyPersonByCode(
   code: string,
   chatId: string | number,
   telegramUserId: string | number
-): Person | undefined {
-  const database = getDb();
-  const person = getPersonByVerificationCode(code);
+): Promise<Person | undefined> {
+  const database = await getDb();
+  const person = await getPersonByVerificationCode(code);
   if (!person) return undefined;
-  database
-    .prepare(`UPDATE people SET telegram_chat_id = ?, telegram_user_id = ?, telegram_verified = 1 WHERE id = ?`)
-    .run(String(chatId), String(telegramUserId), person.id);
+  await database.query(
+    `UPDATE people SET telegram_chat_id = $1, telegram_user_id = $2, telegram_verified = 1 WHERE id = $3`,
+    [String(chatId), String(telegramUserId), person.id]
+  );
   return getPerson(person.id);
 }
 
@@ -409,7 +437,7 @@ export interface Expense {
   created_at: string;
 }
 
-export function createExpense(input: {
+export async function createExpense(input: {
   source: ExpenseSource;
   merchant: string | null;
   expenseDate: string | null;
@@ -429,70 +457,71 @@ export function createExpense(input: {
   imagePath: string | null;
   rawExtraction: unknown;
   confidence?: number | null;
-}): Expense {
-  const database = getDb();
+}): Promise<Expense> {
+  const database = await getDb();
   const created_at = new Date().toISOString();
-  const stmt = database.prepare(
+  const { rows } = await database.query<{ id: number }>(
     `INSERT INTO expenses
        (source, merchant, expense_date, total, currency, subtotal, tax, tip, service_charge, discount,
         category, payment_method, transaction_reference, description, line_items_json,
         visible_names_json, image_path, raw_extraction_json, extraction_confidence, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+     RETURNING id`,
+    [
+      input.source,
+      input.merchant,
+      input.expenseDate,
+      input.total,
+      input.currency,
+      input.subtotal ?? null,
+      input.tax,
+      input.tip,
+      input.serviceCharge ?? null,
+      input.discount ?? null,
+      input.category,
+      input.paymentMethod,
+      input.transactionReference,
+      input.description,
+      JSON.stringify(input.lineItems),
+      JSON.stringify(input.visibleNames),
+      input.imagePath,
+      JSON.stringify(input.rawExtraction ?? null),
+      input.confidence ?? null,
+      created_at,
+    ]
   );
-  const result = stmt.run(
-    input.source,
-    input.merchant,
-    input.expenseDate,
-    input.total,
-    input.currency,
-    input.subtotal ?? null,
-    input.tax,
-    input.tip,
-    input.serviceCharge ?? null,
-    input.discount ?? null,
-    input.category,
-    input.paymentMethod,
-    input.transactionReference,
-    input.description,
-    JSON.stringify(input.lineItems),
-    JSON.stringify(input.visibleNames),
-    input.imagePath,
-    JSON.stringify(input.rawExtraction ?? null),
-    input.confidence ?? null,
-    created_at
-  );
-  return getExpense(Number(result.lastInsertRowid))!;
+  return (await getExpense(rows[0].id))!;
 }
 
-export function getExpense(id: number): Expense | undefined {
-  const database = getDb();
-  return database.prepare(`SELECT * FROM expenses WHERE id = ?`).get(id) as Expense | undefined;
+export async function getExpense(id: number): Promise<Expense | undefined> {
+  const database = await getDb();
+  const { rows } = await database.query<Expense>(`SELECT * FROM expenses WHERE id = $1`, [id]);
+  return rows[0];
 }
 
-export function listExpenses(limit = 100): Expense[] {
-  const database = getDb();
-  return database
-    .prepare(`SELECT * FROM expenses ORDER BY created_at DESC LIMIT ?`)
-    .all(limit) as unknown as Expense[];
+export async function listExpenses(limit = 100): Promise<Expense[]> {
+  const database = await getDb();
+  const { rows } = await database.query<Expense>(`SELECT * FROM expenses ORDER BY created_at DESC LIMIT $1`, [limit]);
+  return rows;
 }
 
 /**
  * Deletes one expense and only that expense — never `people`, never `expense_debts`. The real
- * foreign key on `expense_debts.expense_id` means SQLite itself refuses this delete while any
+ * foreign key on `expense_debts.expense_id` means Postgres itself refuses this delete while any
  * debt still references the expense (the API checks for that first and returns a friendly error
  * rather than letting the constraint failure surface). Returns the deleted row's `image_path` (so
  * the caller can clean up the uploaded file) or undefined if the expense didn't exist.
  */
-export function deleteExpense(id: number): { imagePath: string | null } | undefined {
-  const database = getDb();
-  const existing = getExpense(id);
+export async function deleteExpense(id: number): Promise<{ imagePath: string | null } | undefined> {
+  const database = await getDb();
+  const existing = await getExpense(id);
   if (!existing) return undefined;
-  database.prepare(`DELETE FROM expenses WHERE id = ?`).run(id);
+  await database.query(`DELETE FROM expenses WHERE id = $1`, [id]);
   return { imagePath: existing.image_path };
 }
 
 /** Lets the user correct extracted (or manually-entered) fields before attaching a person/debt. */
-export function updateExpense(
+export async function updateExpense(
   id: number,
   patch: Partial<{
     merchant: string | null;
@@ -509,9 +538,9 @@ export function updateExpense(
     description: string | null;
     lineItems: ExpenseLineItem[];
   }>
-): Expense | undefined {
-  const database = getDb();
-  const current = getExpense(id);
+): Promise<Expense | undefined> {
+  const database = await getDb();
+  const current = await getExpense(id);
   if (!current) return undefined;
 
   const next = {
@@ -530,12 +559,10 @@ export function updateExpense(
     line_items_json: patch.lineItems !== undefined ? JSON.stringify(patch.lineItems) : current.line_items_json,
   };
 
-  database
-    .prepare(
-      `UPDATE expenses SET merchant = ?, expense_date = ?, total = ?, currency = ?, subtotal = ?, tax = ?, tip = ?,
-         service_charge = ?, discount = ?, category = ?, payment_method = ?, description = ?, line_items_json = ? WHERE id = ?`
-    )
-    .run(
+  await database.query(
+    `UPDATE expenses SET merchant = $1, expense_date = $2, total = $3, currency = $4, subtotal = $5, tax = $6, tip = $7,
+       service_charge = $8, discount = $9, category = $10, payment_method = $11, description = $12, line_items_json = $13 WHERE id = $14`,
+    [
       next.merchant,
       next.expense_date,
       next.total,
@@ -549,8 +576,9 @@ export function updateExpense(
       next.payment_method,
       next.description,
       next.line_items_json,
-      id
-    );
+      id,
+    ]
+  );
 
   return getExpense(id);
 }
@@ -584,7 +612,7 @@ export interface ExpenseDebt {
   paid_at: string | null;
 }
 
-export function createExpenseDebt(input: {
+export async function createExpenseDebt(input: {
   expenseId: number;
   personId: number;
   amount: number;
@@ -594,77 +622,89 @@ export function createExpenseDebt(input: {
   desiredAction: string | null;
   contextJson: unknown;
   selectedItems?: Array<{ name: string; amount: number }> | null;
-}): ExpenseDebt {
-  const database = getDb();
+}): Promise<ExpenseDebt> {
+  const database = await getDb();
   const created_at = new Date().toISOString();
-  const stmt = database.prepare(
+  const { rows } = await database.query<{ id: number }>(
     `INSERT INTO expense_debts
        (expense_id, person_id, amount, currency, status, context_json, share_mode, additional_context, desired_action, selected_items_json, created_at)
-     VALUES (?, ?, ?, ?, 'UNPAID', ?, ?, ?, ?, ?, ?)`
+     VALUES ($1, $2, $3, $4, 'UNPAID', $5, $6, $7, $8, $9, $10)
+     RETURNING id`,
+    [
+      input.expenseId,
+      input.personId,
+      input.amount,
+      input.currency,
+      input.contextJson != null ? JSON.stringify(input.contextJson) : null,
+      input.shareMode,
+      input.additionalContext,
+      input.desiredAction,
+      input.selectedItems && input.selectedItems.length > 0 ? JSON.stringify(input.selectedItems) : null,
+      created_at,
+    ]
   );
-  const result = stmt.run(
-    input.expenseId,
-    input.personId,
-    input.amount,
-    input.currency,
-    input.contextJson != null ? JSON.stringify(input.contextJson) : null,
-    input.shareMode,
-    input.additionalContext,
-    input.desiredAction,
-    input.selectedItems && input.selectedItems.length > 0 ? JSON.stringify(input.selectedItems) : null,
-    created_at
+  return (await getExpenseDebt(rows[0].id))!;
+}
+
+export async function getExpenseDebt(id: number): Promise<ExpenseDebt | undefined> {
+  const database = await getDb();
+  const { rows } = await database.query<ExpenseDebt>(`SELECT * FROM expense_debts WHERE id = $1`, [id]);
+  return rows[0];
+}
+
+export async function getDebtsForExpense(expenseId: number): Promise<ExpenseDebt[]> {
+  const database = await getDb();
+  const { rows } = await database.query<ExpenseDebt>(
+    `SELECT * FROM expense_debts WHERE expense_id = $1 ORDER BY created_at ASC`,
+    [expenseId]
   );
-  return getExpenseDebt(Number(result.lastInsertRowid))!;
+  return rows;
 }
 
-export function getExpenseDebt(id: number): ExpenseDebt | undefined {
-  const database = getDb();
-  return database.prepare(`SELECT * FROM expense_debts WHERE id = ?`).get(id) as ExpenseDebt | undefined;
+export async function getDebtsForPerson(personId: number): Promise<ExpenseDebt[]> {
+  const database = await getDb();
+  const { rows } = await database.query<ExpenseDebt>(
+    `SELECT * FROM expense_debts WHERE person_id = $1 ORDER BY created_at DESC`,
+    [personId]
+  );
+  return rows;
 }
 
-export function getDebtsForExpense(expenseId: number): ExpenseDebt[] {
-  const database = getDb();
-  return database
-    .prepare(`SELECT * FROM expense_debts WHERE expense_id = ? ORDER BY created_at ASC`)
-    .all(expenseId) as unknown as ExpenseDebt[];
+export async function listRecentDebts(limit = 100): Promise<ExpenseDebt[]> {
+  const database = await getDb();
+  const { rows } = await database.query<ExpenseDebt>(`SELECT * FROM expense_debts ORDER BY created_at DESC LIMIT $1`, [
+    limit,
+  ]);
+  return rows;
 }
 
-export function getDebtsForPerson(personId: number): ExpenseDebt[] {
-  const database = getDb();
-  return database
-    .prepare(`SELECT * FROM expense_debts WHERE person_id = ? ORDER BY created_at DESC`)
-    .all(personId) as unknown as ExpenseDebt[];
-}
-
-export function listRecentDebts(limit = 100): ExpenseDebt[] {
-  const database = getDb();
-  return database
-    .prepare(`SELECT * FROM expense_debts ORDER BY created_at DESC LIMIT ?`)
-    .all(limit) as unknown as ExpenseDebt[];
-}
-
-export function updateDebtContext(id: number, context: unknown): ExpenseDebt | undefined {
-  const database = getDb();
-  database.prepare(`UPDATE expense_debts SET context_json = ? WHERE id = ?`).run(JSON.stringify(context), id);
+export async function updateDebtContext(id: number, context: unknown): Promise<ExpenseDebt | undefined> {
+  const database = await getDb();
+  await database.query(`UPDATE expense_debts SET context_json = $1 WHERE id = $2`, [JSON.stringify(context), id]);
   return getExpenseDebt(id);
 }
 
-export function updateDebtDraftMessage(
+export async function updateDebtDraftMessage(
   id: number,
   patch: { message: string; tone: string | null; edited: boolean }
-): ExpenseDebt | undefined {
-  const database = getDb();
-  database
-    .prepare(`UPDATE expense_debts SET message = ?, tone = ?, message_edited = ? WHERE id = ?`)
-    .run(patch.message, patch.tone, patch.edited ? 1 : 0, id);
+): Promise<ExpenseDebt | undefined> {
+  const database = await getDb();
+  await database.query(`UPDATE expense_debts SET message = $1, tone = $2, message_edited = $3 WHERE id = $4`, [
+    patch.message,
+    patch.tone,
+    patch.edited ? 1 : 0,
+    id,
+  ]);
   return getExpenseDebt(id);
 }
 
-export function setDebtStatus(id: number, status: DebtStatus): ExpenseDebt | undefined {
-  const database = getDb();
-  database
-    .prepare(`UPDATE expense_debts SET status = ?, paid_at = ? WHERE id = ?`)
-    .run(status, status === "PAID" ? new Date().toISOString() : null, id);
+export async function setDebtStatus(id: number, status: DebtStatus): Promise<ExpenseDebt | undefined> {
+  const database = await getDb();
+  await database.query(`UPDATE expense_debts SET status = $1, paid_at = $2 WHERE id = $3`, [
+    status,
+    status === "PAID" ? new Date().toISOString() : null,
+    id,
+  ]);
   return getExpenseDebt(id);
 }
 
@@ -674,12 +714,12 @@ export function setDebtStatus(id: number, status: DebtStatus): ExpenseDebt | und
  * person and the underlying expense this debt was drafted against are always left exactly as
  * they were. Returns false if the debt didn't exist (nothing to delete), true otherwise.
  */
-export function deleteExpenseDebt(id: number): boolean {
-  const database = getDb();
-  const existing = getExpenseDebt(id);
+export async function deleteExpenseDebt(id: number): Promise<boolean> {
+  const database = await getDb();
+  const existing = await getExpenseDebt(id);
   if (!existing) return false;
-  database.prepare(`DELETE FROM reminders WHERE debt_id = ?`).run(id);
-  database.prepare(`DELETE FROM expense_debts WHERE id = ?`).run(id);
+  await database.query(`DELETE FROM reminders WHERE debt_id = $1`, [id]);
+  await database.query(`DELETE FROM expense_debts WHERE id = $1`, [id]);
   return true;
 }
 
@@ -689,22 +729,20 @@ export interface DashboardStats {
   remindersSent: number;
 }
 
-export function getDashboardStats(): DashboardStats {
-  const database = getDb();
+export async function getDashboardStats(): Promise<DashboardStats> {
+  const database = await getDb();
   const totalOwed = (
-    database.prepare(`SELECT COALESCE(SUM(amount), 0) AS v FROM expense_debts WHERE status = 'UNPAID'`).get() as {
-      v: number;
-    }
-  ).v;
+    await database.query<{ v: number }>(`SELECT COALESCE(SUM(amount), 0) AS v FROM expense_debts WHERE status = 'UNPAID'`)
+  ).rows[0].v;
   const peopleOwing = (
-    database
-      .prepare(`SELECT COUNT(DISTINCT person_id) AS v FROM expense_debts WHERE status = 'UNPAID'`)
-      .get() as { v: number }
-  ).v;
+    await database.query<{ v: number }>(
+      `SELECT COUNT(DISTINCT person_id) AS v FROM expense_debts WHERE status = 'UNPAID'`
+    )
+  ).rows[0].v;
   const remindersSent = (
-    database.prepare(`SELECT COUNT(*) AS v FROM reminders WHERE status = 'SENT'`).get() as { v: number }
-  ).v;
-  return { totalOwed, peopleOwing, remindersSent };
+    await database.query<{ v: number }>(`SELECT COUNT(*) AS v FROM reminders WHERE status = 'SENT'`)
+  ).rows[0].v;
+  return { totalOwed: Number(totalOwed), peopleOwing: Number(peopleOwing), remindersSent: Number(remindersSent) };
 }
 
 // ---------------------------------------------------------------------------
@@ -727,54 +765,56 @@ export interface Reminder {
   telegram_message_id: string | null;
 }
 
-export function recordReminder(input: {
+export async function recordReminder(input: {
   debtId: number;
   personId: number;
   message: string;
   tone: string | null;
   status: ReminderStatus;
   telegramMessageId?: string | number | null;
-}): Reminder {
-  const database = getDb();
+}): Promise<Reminder> {
+  const database = await getDb();
   const created_at = new Date().toISOString();
-  const stmt = database.prepare(
+  const { rows } = await database.query<Reminder>(
     `INSERT INTO reminders (debt_id, person_id, message, tone, status, created_at, sent_at, telegram_message_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    [
+      input.debtId,
+      input.personId,
+      input.message,
+      input.tone,
+      input.status,
+      created_at,
+      input.status === "SENT" ? created_at : null,
+      input.telegramMessageId != null ? String(input.telegramMessageId) : null,
+    ]
   );
-  const result = stmt.run(
-    input.debtId,
-    input.personId,
-    input.message,
-    input.tone,
-    input.status,
-    created_at,
-    input.status === "SENT" ? created_at : null,
-    input.telegramMessageId != null ? String(input.telegramMessageId) : null
+  return rows[0];
+}
+
+export async function listReminders(limit = 100): Promise<Reminder[]> {
+  const database = await getDb();
+  const { rows } = await database.query<Reminder>(`SELECT * FROM reminders ORDER BY created_at DESC LIMIT $1`, [
+    limit,
+  ]);
+  return rows;
+}
+
+export async function getRemindersForDebt(debtId: number): Promise<Reminder[]> {
+  const database = await getDb();
+  const { rows } = await database.query<Reminder>(`SELECT * FROM reminders WHERE debt_id = $1 ORDER BY created_at DESC`, [
+    debtId,
+  ]);
+  return rows;
+}
+
+export async function getRemindersForPerson(personId: number): Promise<Reminder[]> {
+  const database = await getDb();
+  const { rows } = await database.query<Reminder>(
+    `SELECT * FROM reminders WHERE person_id = $1 ORDER BY created_at DESC`,
+    [personId]
   );
-  return database
-    .prepare(`SELECT * FROM reminders WHERE id = ?`)
-    .get(Number(result.lastInsertRowid)) as unknown as Reminder;
-}
-
-export function listReminders(limit = 100): Reminder[] {
-  const database = getDb();
-  return database
-    .prepare(`SELECT * FROM reminders ORDER BY created_at DESC LIMIT ?`)
-    .all(limit) as unknown as Reminder[];
-}
-
-export function getRemindersForDebt(debtId: number): Reminder[] {
-  const database = getDb();
-  return database
-    .prepare(`SELECT * FROM reminders WHERE debt_id = ? ORDER BY created_at DESC`)
-    .all(debtId) as unknown as Reminder[];
-}
-
-export function getRemindersForPerson(personId: number): Reminder[] {
-  const database = getDb();
-  return database
-    .prepare(`SELECT * FROM reminders WHERE person_id = ? ORDER BY created_at DESC`)
-    .all(personId) as unknown as Reminder[];
+  return rows;
 }
 
 // ---------------------------------------------------------------------------
@@ -784,25 +824,25 @@ export function getRemindersForPerson(personId: number): Reminder[] {
 // truth for verification); this is a lower-level cache the poller also uses.
 // ---------------------------------------------------------------------------
 
-export function upsertTelegramContact(username: string, chatId: string | number): void {
-  const database = getDb();
+export async function upsertTelegramContact(username: string, chatId: string | number): Promise<void> {
+  const database = await getDb();
   const normalized = normalizeUsername(username);
-  database
-    .prepare(
-      `INSERT INTO telegram_contacts (telegram_username, chat_id, last_seen_at)
-       VALUES (?, ?, ?)
-       ON CONFLICT(telegram_username) DO UPDATE SET chat_id = excluded.chat_id, last_seen_at = excluded.last_seen_at`
-    )
-    .run(normalized, String(chatId), new Date().toISOString());
+  await database.query(
+    `INSERT INTO telegram_contacts (telegram_username, chat_id, last_seen_at)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (telegram_username) DO UPDATE SET chat_id = EXCLUDED.chat_id, last_seen_at = EXCLUDED.last_seen_at`,
+    [normalized, String(chatId), new Date().toISOString()]
+  );
 }
 
-export function getChatIdForUsername(username: string): string | undefined {
-  const database = getDb();
+export async function getChatIdForUsername(username: string): Promise<string | undefined> {
+  const database = await getDb();
   const normalized = normalizeUsername(username);
-  const row = database
-    .prepare(`SELECT chat_id FROM telegram_contacts WHERE telegram_username = ?`)
-    .get(normalized) as { chat_id: string } | undefined;
-  return row?.chat_id;
+  const { rows } = await database.query<{ chat_id: string }>(
+    `SELECT chat_id FROM telegram_contacts WHERE telegram_username = $1`,
+    [normalized]
+  );
+  return rows[0]?.chat_id;
 }
 
 // ---------------------------------------------------------------------------
@@ -816,18 +856,16 @@ export interface UserRecord {
   last_login_at: string;
 }
 
-export function upsertUser(telegramUsername: string): UserRecord {
-  const database = getDb();
+export async function upsertUser(telegramUsername: string): Promise<UserRecord> {
+  const database = await getDb();
   const username = normalizeUsername(telegramUsername);
   const now = new Date().toISOString();
-  database
-    .prepare(
-      `INSERT INTO users (telegram_username, created_at, last_login_at)
-       VALUES (?, ?, ?)
-       ON CONFLICT(telegram_username) DO UPDATE SET last_login_at = excluded.last_login_at`
-    )
-    .run(username, now, now);
-  return database
-    .prepare(`SELECT * FROM users WHERE telegram_username = ?`)
-    .get(username) as unknown as UserRecord;
+  await database.query(
+    `INSERT INTO users (telegram_username, created_at, last_login_at)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (telegram_username) DO UPDATE SET last_login_at = EXCLUDED.last_login_at`,
+    [username, now, now]
+  );
+  const { rows } = await database.query<UserRecord>(`SELECT * FROM users WHERE telegram_username = $1`, [username]);
+  return rows[0];
 }
