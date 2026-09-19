@@ -109,28 +109,41 @@ async function handleCallbackQuery(cb: TelegramCallbackQuery): Promise<void> {
 }
 
 /**
- * Handles the web app's Telegram-verification code (`/verify ABC123`, or the
- * bare code on its own) — the only way to verify someone whose Telegram
- * account has no public @username, since the Bot API then gives no
- * username to match against at all, only a numeric id.
+ * Handles the web app's Telegram-verification code (`/verify ABC123`, the
+ * bare code on its own, or the code mentioned inside a longer message like
+ * "hi its ABC123") — the only way to verify someone whose Telegram account
+ * has no public @username, since the Bot API then gives no username to
+ * match against at all, only a numeric id.
+ *
+ * Matching used to require the ENTIRE trimmed message to be exactly the
+ * code, and stayed completely silent on anything else — so a real person
+ * adding a word of context ("here's the code ABC123") got no reply and no
+ * indication anything had gone wrong at all. Now it looks for a plausible
+ * 6-8 character alphanumeric token anywhere in the message and always
+ * replies once it finds one, whether it matches or not.
  */
 async function handleVerifyCommand(message: TelegramMessage): Promise<boolean> {
   const text = message.text?.trim();
   if (!text) return false;
 
-  const match = text.match(/^\/verify\s+([A-Za-z0-9]{4,8})$/i) ?? text.match(/^([A-Za-z0-9]{6})$/);
+  const explicit = text.match(/\/?verify\W*([A-Za-z0-9]{4,8})/i);
+  // A bare token (no "verify" prefix) is only treated as a code attempt if it contains at least
+  // one digit — real codes almost always mix letters and digits, while a plain 6-letter English
+  // word (e.g. "thanks") does not. Without this, ordinary chat gets misidentified as a failed
+  // code attempt and receives an unwanted "doesn't match anyone" reply.
+  const bareToken = [...text.matchAll(/\b([A-Za-z0-9]{6})\b/g)].find(([token]) => /[0-9]/.test(token));
+  const match = explicit ?? bareToken;
   if (!match) return false;
 
   const code = match[1];
   const person = verifyPersonByCode(code, message.chat.id, message.from?.id ?? message.chat.id);
 
   if (!person) {
-    // Only swallow this as "handled" once it actually looks like a code
-    // attempt (matched via /verify); a bare 6-char guess that misses could
-    // plausibly be something else the user meant to say, so let it fall
-    // through to other handlers instead of replying with a confusing error.
-    if (!text.toLowerCase().startsWith("/verify")) return false;
-    await tgSendMessage(message.chat.id, "That code doesn't match anyone. Double-check it in the app and try again.");
+    console.log(`[Telegram] code attempt "${code}" (from message "${text.slice(0, 80)}") didn't match anyone, chat ${message.chat.id}`);
+    await tgSendMessage(
+      message.chat.id,
+      `"${code}" doesn't match anyone. Double-check the code shown in the app (it's case-insensitive, just the 6 characters) and send it again.`
+    );
     return true;
   }
 
@@ -147,9 +160,10 @@ async function handleVerifyCommand(message: TelegramMessage): Promise<boolean> {
  * Telegram username to somewhere real to deliver to.
  */
 function recordTelegramContact(message: TelegramMessage): void {
+  const textPreview = message.text ? ` text: "${message.text.slice(0, 80)}"` : "";
   if (message.from?.username) {
     console.log(
-      `[Telegram] incoming message from @${message.from.username} (user id ${message.from.id}, chat ${message.chat.id})`
+      `[Telegram] incoming message from @${message.from.username} (user id ${message.from.id}, chat ${message.chat.id})${textPreview}`
     );
     upsertTelegramContact(message.from.username, message.chat.id);
     // This incoming message is the only honest proof the Bot API gives us
@@ -159,9 +173,10 @@ function recordTelegramContact(message: TelegramMessage): void {
   } else if (message.from) {
     // No public @username on this Telegram account — the Bot API gives no
     // other way to match it to a username a person typed into this app, so
-    // verification can't happen for them until they set one.
+    // username-matching verification can't happen for them, but the
+    // code-based path (handleVerifyCommand) works regardless of this.
     console.log(
-      `[Telegram] incoming message from user id ${message.from.id} (chat ${message.chat.id}) — this account has no public @username, so it can't be matched/verified.`
+      `[Telegram] incoming message from user id ${message.from.id} (chat ${message.chat.id}) — no public @username.${textPreview}`
     );
   }
 }
