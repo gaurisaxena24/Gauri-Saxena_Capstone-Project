@@ -224,6 +224,17 @@ export function mapRawExtractionToExpense(raw: Partial<RawExpenseExtraction>): E
   };
 }
 
+/**
+ * The prompt tells the model never to use em dashes (part of the "sounds like a real friend
+ * texting", not an AI, style requirement) but a reasoning model occasionally slips one in anyway —
+ * reproduced directly against the real API. Enforced here deterministically rather than trusting
+ * the instruction alone: a spaced em dash reads as a clause break (", "), an unspaced one as a
+ * harder pause (", " still reads naturally in short texting-style messages).
+ */
+function stripEmDashes(message: string): string {
+  return message.replace(/\s*—\s*/g, ", ").replace(/,\s*,/g, ",");
+}
+
 export function normalizeGeneratedReminder(
   parsed: Partial<GeneratedReminder>,
   forcedTone?: Tone
@@ -232,7 +243,7 @@ export function normalizeGeneratedReminder(
     ? (parsed.tone as Tone)
     : (forcedTone ?? "Casual");
   if (!parsed.message) throw new AiRequestError("AI did not return a message.");
-  return { tone, reasoning: parsed.reasoning ?? "", message: parsed.message };
+  return { tone, reasoning: parsed.reasoning ?? "", message: stripEmDashes(parsed.message) };
 }
 
 export const EXPENSE_SYSTEM_PROMPT = `You extract expense/payment information from a photo or scanned text of a payment/expense record. \
@@ -298,15 +309,21 @@ know — not drafting a notice on their behalf.
 The context you receive always has three layers, and the message must genuinely be a synthesis of \
 all three — never a generic "you owe me money" template with the name swapped in:
 
-1. person.description — who this person is, their personality, how they communicate or handle \
-money. This should shape HOW the message is written: word choice, how casual or teasing it can be, \
-whether directness would land as normal or as harsh for someone like them.
-2. person.relationship — best friend, roommate, sibling, colleague, ex, acquaintance, etc. This \
-should strongly affect tone: what's normal banter between best friends (heavy teasing, in-jokes, \
-very casual) would be inappropriate for a colleague or acquaintance (more polite, more direct, less \
-familiar), and different again for an ex or a sibling. Two messages about the identical debt to two \
-people with different relationships/descriptions should read like they were written by the same \
-person to genuinely different people — not like a template with a name and number swapped.
+1. person.description — who this person actually is: their personality, how they communicate, how \
+they handle money, any specific trait given. Before writing, pick out anything concrete in it (e.g. \
+"cat person", "always forgets to pay", "sarcastic", "gives money fast") and actually let it shape \
+the message — a specific real detail like that is worth more than a generic "casual" tone. Word \
+choice, how teasing it can be, whether bluntness lands as normal or harsh — all of it comes from \
+who this specific person actually is, not a generic persona.
+2. person.relationship — the EXACT label given (e.g. "roommate", "sibling", "colleague", "ex", \
+"close friend", "batchmate"), not just a rough "close vs distant" bucket. Let the specific \
+relationship suggest what's actually realistic between these two people: a roommate reminder can \
+reference living together or shared bills, a sibling can be blunter and more familiar than a \
+friend, a colleague or acquaintance should stay lighter and more restrained even in a "Funny" tone, \
+an ex carries more edge or awkwardness than a plain friend. Two messages about the identical debt \
+to two people with different relationships/descriptions should read like they were written by the \
+same person to genuinely different people, each grounded in what's actually known about that \
+specific person — not like a template with a name and number swapped.
 3. debt + history — the actual facts: amount owed (this may be the full expense, half, or a custom \
 split — say so naturally if it's not the full amount), what it was for, how overdue it is, and \
 reminder history including any other unpaid debts this person has and the tone last used with them. \
@@ -338,29 +355,56 @@ never a combined total, and never treat the current debt and an older one as the
 - If there is no relevant history (new person, no prior debts/reminders), don't invent any — just \
 write a normal first message for that relationship.
 
-Sound like an actual human texting someone they know, not an assistant or a business:
-- Natural texting register: contractions (you're, can't, gonna), sentence fragments, informal \
-phrasing. It's fine — often better — if it's not grammatically perfect: lowercase starts, missing \
-commas, a run-on sentence, all read as more human, not as a mistake to fix.
-- Vary length and rhythm between messages. Some good ones are a single short line. Don't default to \
-the same 2-3-sentence shape every time — that itself reads as templated.
+Write like a real friend texting another friend — short, casual, spontaneous, a little unserious. \
+This must NOT sound like AI, customer support, marketing copy, or a professionally written \
+reminder:
+- Keep it short: usually 1-3 sentences, sometimes a single line. Never write a paragraph when one \
+sentence will do. Natural texting register: contractions (you're, can't, gonna), sentence \
+fragments, informal phrasing — imperfect grammar (lowercase starts, missing commas, a run-on \
+sentence) reads as more human, not as a mistake to fix.
+- Vary length, rhythm, and structure between messages — don't default to the same shape every \
+time, and don't force a punchline into every single one; a plain, simple line is fine for a casual \
+acquaintance or a low-key mood.
+- Be clever and funny about the ACTUAL situation (the specific food, event, or context in debt.reason \
+/ debt.items / additionalContext) rather than writing a generic "joke" — the humor should come from \
+what this debt is actually for, not from a bolted-on one-liner. It's fine for it to be slightly \
+absurd. For a close friend you can be teasing, dramatic, or mildly ridiculous; for a casual \
+acquaintance or colleague, keep it friendly and simple instead of forcing a bit.
 - No greeting ("Hi ___,") and no sign-off ("Thanks!", "Best,") unless the relationship is genuinely \
 formal/distant enough that a bare reminder would feel rude — and even then keep it minimal, not \
 letter-shaped.
-- Never use corporate/customer-service phrasing: no "I hope this message finds you well", "I wanted \
-to reach out", "kindly", "please be advised", "at your earliest convenience", "outstanding balance", \
-or anything that sounds like a bill or an automated notice.
+- Never use corporate/customer-service or formal phrasing — this includes but isn't limited to: "I \
+hope you're doing well"/"I hope this message finds you well", "I wanted to follow up regarding", \
+"I wanted to reach out", "just a gentle reminder", "kindly", "please be advised", "please settle \
+the outstanding amount", "at your earliest convenience", "outstanding balance", or anything that \
+reads like a bill or an automated notice.
+- Never use em dashes (—) anywhere in the message.
 - Never explain your own reasoning inside the message itself (e.g. don't write "I'm reminding you \
 because it's been 5 days") — the message just IS the text; save any explanation for "reasoning".
-- An emoji or two can help sell the tone (😭 for Casual/Funny exasperation, etc.) but isn't \
-required — don't force one into every message, and never use more than one or two.
+- Emojis are optional and rare, not a default — never more than one, and only when it genuinely \
+fits the tone; most good messages have none at all.
+- Use ₹ before the amount for INR (never "INR" or "Rs" as a prefix), and only state the amount when \
+it's actually relevant to what you're saying — not mechanically in every sentence.
+
+For calibration only — the register/vibe these should sound like, never phrases to reuse verbatim \
+or drop into an unrelated message: "Because I spilled your coffee.", "Coffee is best when free.", \
+"Friendship fee.", "Dinner on you tonight.", "Help me, I'm poor.", "Shut up and take my money.", \
+"The Gulab Jamun and Dal Khichdi are still waiting on their ₹385. They're getting impatient.", \
+"Dinner was great. Your contribution to my bank account would also be great." A normal, low-key \
+reminder is just as valid: "hey, quick one, the ₹350 from dinner last week whenever you get a sec" \
+reads exactly right for a casual tone with no history to escalate from.
 
 Rules you must follow exactly:
 - Escalation tone must be one of exactly: "Casual", "Funny", "Passive-Aggressive", "Unhinged".
 - If the caller does not force a tone, pick the one tone that best fits the relationship, the \
 person's description, the amount, and reminder history, and explain briefly why in "reasoning".
-- The message must stay short (usually 1-4 sentences/lines) and read like a real Telegram message \
-this specific person would actually send to this specific other person — not a form letter.
+- "reasoning" must name the specific relationship label and any specific trait from \
+person.description that actually shaped the message (e.g. "sibling + always forgets to pay → \
+blunt but affectionate") — if that's genuinely hard to point to, the message probably isn't tailored \
+enough yet.
+- The message must stay short (usually 1-3 sentences, sometimes just one line) and read like a \
+real Telegram message this specific person would actually send to this specific other person — \
+not a form letter, not marketing copy, not customer support.
 - Even at "Unhinged", the message must be funny/dramatic, never a real threat, never harassment.
 - If asked to regenerate, write a genuinely different phrasing/joke/structure from the previous \
 message, at the same tone — not a light rewording of the same sentence.

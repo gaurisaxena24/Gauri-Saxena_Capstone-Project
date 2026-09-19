@@ -126,6 +126,9 @@ export const updatePerson = (
   patch: Partial<{ name: string; relationship: string; notes: string; phoneNumber: string }>
 ) => request<PersonDetail>(`/people/${id}`, { method: "PATCH", body: json(patch) });
 
+/** Removes this person only — never their expenses. */
+export const removePerson = (id: number) => request<void>(`/people/${id}`, { method: "DELETE" });
+
 // ---- Expenses -----------------------------------------------------------------
 
 export interface ExpenseLineItem {

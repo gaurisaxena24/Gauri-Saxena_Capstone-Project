@@ -194,3 +194,8 @@ export function removeDebt(debtId: number): boolean {
 export function removeExpense(expenseId: number): { imagePath: string | null } | undefined {
   return debtAgent.removeExpense(expenseId);
 }
+
+/** Removes a person only — never their expenses. Fails (a real DB foreign key) if any debt still references them; remove those debts first. */
+export function removePerson(personId: number): boolean {
+  return profileAgent.removePerson(personId);
+}

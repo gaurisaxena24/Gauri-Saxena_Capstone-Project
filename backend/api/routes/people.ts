@@ -1,4 +1,5 @@
 import { Router } from "express";
+import * as agent from "../../../agent/debtCollectorAgent.js";
 import * as profileSkill from "../../../skills/profileSkill.js";
 import * as debtSkill from "../../../skills/debtSkill.js";
 import * as reminderSkill from "../../../skills/reminderSkill.js";
@@ -109,4 +110,29 @@ peopleRouter.patch("/:id", (req, res) => {
     return;
   }
   res.json(buildPersonDetail(updated));
+});
+
+/**
+ * Removes this person and only this person — never their expenses. The database itself enforces
+ * that no debt can reference a missing person (a real foreign key), so a debt still drafted
+ * against them blocks the delete with a clear message rather than a raw DB error — remove those
+ * debts first (via the existing debt-remove action), then this person can go.
+ */
+peopleRouter.delete("/:id", (req, res) => {
+  const id = Number(req.params.id);
+  const attachedDebts = debtSkill.getDebtsByPerson(id);
+  if (attachedDebts.length > 0) {
+    res.status(409).json({
+      error: `${attachedDebts.length} debt(s) are still attached to this person. Remove ${
+        attachedDebts.length === 1 ? "it" : "them"
+      } first, then you can delete this person.`,
+    });
+    return;
+  }
+  const removed = agent.removePerson(id);
+  if (!removed) {
+    res.status(404).json({ error: "Person not found." });
+    return;
+  }
+  res.status(204).end();
 });

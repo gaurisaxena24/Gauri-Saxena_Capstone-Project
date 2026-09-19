@@ -269,6 +269,21 @@ export function updatePerson(
   return getPerson(id);
 }
 
+/**
+ * Deletes one person and only that person. The real foreign keys on
+ * `expense_debts.person_id`/`reminders.person_id` mean SQLite itself refuses this delete while
+ * any debt still references the person — the API checks for that first and returns a friendly
+ * message rather than letting the constraint failure surface. Returns true if deleted, false if
+ * the person didn't exist.
+ */
+export function deletePerson(id: number): boolean {
+  const database = getDb();
+  const existing = getPerson(id);
+  if (!existing) return false;
+  database.prepare(`DELETE FROM people WHERE id = ?`).run(id);
+  return true;
+}
+
 export function getPersonByUsername(telegramUsername: string): Person | undefined {
   const database = getDb();
   const username = normalizeUsername(telegramUsername);

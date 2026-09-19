@@ -34,6 +34,11 @@ import {
 
 const GENERATION_MAX_TOKENS = 1024;
 const MAX_ATTEMPTS = 3;
+// Groq's free "on_demand" tier caps tokens-per-minute quite low (8000 at time of writing) —
+// bursts of generate/regenerate calls close together routinely hit it. Rather than surfacing
+// Groq's raw "Rate limit reached... Please try again in 11.99s" to the user, wait out the exact
+// delay Groq itself reports and retry automatically, capped so a request never hangs too long.
+const MAX_RATE_LIMIT_WAIT_MS = 20_000;
 
 function isValidReminder(value: GeneratedReminder): boolean {
   return (
@@ -46,6 +51,18 @@ function isValidReminder(value: GeneratedReminder): boolean {
 /** Groq's own inability to produce a schema-valid completion — as opposed to auth/network errors, which should fail immediately rather than burn retries. */
 function isJsonGenerationFailure(error: unknown): boolean {
   return error instanceof AiRequestError && /json/i.test(error.message);
+}
+
+/** Extracts Groq's own "Please try again in 11.99s" delay, if this was a rate-limit error. */
+function rateLimitWaitMs(error: unknown): number | null {
+  if (!(error instanceof AiRequestError) || !/rate limit/i.test(error.message)) return null;
+  const match = error.message.match(/try again in ([\d.]+)s/i);
+  const seconds = match ? Number(match[1]) : 5;
+  return Math.min(Math.ceil(seconds * 1000) + 250, MAX_RATE_LIMIT_WAIT_MS);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function draftReminderMessage(params: {
@@ -67,8 +84,16 @@ export async function draftReminderMessage(params: {
       lastError = new AiRequestError("AI response was missing a valid message/tone.");
     } catch (error) {
       lastError = error;
+      const rateLimitWait = rateLimitWaitMs(error);
+      if (rateLimitWait !== null) {
+        if (attempt < MAX_ATTEMPTS) await sleep(rateLimitWait);
+        continue;
+      }
       if (!isJsonGenerationFailure(error)) throw error; // auth/network errors: fail fast, don't retry
     }
+  }
+  if (rateLimitWaitMs(lastError) !== null) {
+    throw new AiRequestError("Groq's rate limit is briefly maxed out — please wait a few seconds and try again.");
   }
   throw lastError instanceof Error
     ? lastError
