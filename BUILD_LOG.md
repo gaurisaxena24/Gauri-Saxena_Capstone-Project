@@ -589,3 +589,27 @@ All test people/expenses/debts and uploaded test images were deleted afterward �
 **Claude Code token usage:** Not available.
 
 **Notes / issues:** The item-selection UI's per-item editing keeps `quantity`/`unitPrice`/`price` in sync (editing quantity or unit price recomputes the line total; editing the line total directly overrides it), but there's no re-validation if a user edits quantity to 0 with a nonzero unit price — the line total simply stays whatever it was until touched again, which is harmless but slightly surprising. Separately: this session discovered there was already a dev server running from a prior/concurrent session (started well before this one) sharing the same `data/debts.db` — worth being aware that multiple `npm run dev` instances against the same project all read/write the same database file.
+
+## 2026-09-19 (3)
+### Task: Diagnose "Telegram verification not working after the person sent the code"
+
+**What I asked Claude Code to do:** A real person (divyanshi) was given her verification code and sent it to the bot, but her profile still shows unverified — find and fix why.
+
+**What Claude Code did:**
+- Confirmed the bot token is valid (`getMe` succeeds) and the person's record (`people` id 23) is real, unverified, with a stored `verification_code` (`QNK9S2`) and no `telegram_user_id`/`telegram_chat_id` recorded yet — so her message was never actually processed by anything that could see this database.
+- Checked `backend/index.ts`'s `shouldPollTelegram()`: by design, the Telegram poller only runs when `RAILWAY_ENVIRONMENT` is set (i.e. on Railway) or `ENABLE_TELEGRAM_POLLER=true` is set locally — neither was set, so the local dev server was never even attempting to read Telegram updates, let alone process her code.
+- Temporarily set `ENABLE_TELEGRAM_POLLER=true` and restarted the local dev server to test enabling it — this immediately surfaced the real root cause: `Telegram getUpdates failed ... Conflict: terminated by other getUpdates request; make sure that only one bot instance is running`. Confirmed via `ps -ef` that no other local process for this project was running, meaning the only thing that could be holding that connection is the deployed Railway instance, which is apparently live and actively polling right now.
+- Telegram allows only one long-poll connection per bot token at a time, and whichever instance wins processes the update against *its own* database. Since divyanshi was added through the local app's database, even if her `/verify QNK9S2` message reached the bot, it was Railway's separate deployed database (which has no record of her or her code) that received it — not this local one — so it could only ever fail to match or go unseen locally.
+- Reverted `ENABLE_TELEGRAM_POLLER` back out of `.env` (leaving it retrying every 3s against a connection it can never win, while Railway is live, is pure log noise with no benefit) and restarted the dev server back to its normal quiet state.
+
+**Files created:** none.
+
+**Files modified:** none (a local-only `.env` toggle was set then reverted during diagnosis; net change is zero).
+
+**Result:** Root cause identified and explained, not silently patched around, since the real fix requires a decision only the user can make about which environment (local vs. the live Railway deployment) they're actually testing verification against. No application logic was touched.
+
+**Testing / verification:** Reproduced the exact failure live: enabling the local poller and watching it immediately hit Telegram's real `Conflict` error against the real bot token, then confirmed via `ps -ef` that the only other possible source of that conflict is the deployed Railway instance (no stray local process exists). Restarted the dev server afterward and confirmed clean startup logs with the poller correctly skipped and the API serving normally on port 4000.
+
+**Claude Code token usage:** Not available.
+
+**Notes / issues:** Unresolved — needs a decision from the user: either (a) pause/stop the Railway service while testing Telegram verification locally, so the local instance can win the `getUpdates` connection and see divyanshi's code, or (b) add/verify people directly through the deployed Railway app instead of localhost, since that's the instance actually receiving Telegram messages right now. Divyanshi will need to resend her code (`QNK9S2`) after whichever path is chosen, since her original message was never seen by the database she was created in.

@@ -81,10 +81,29 @@ server.tool(
   }
 );
 
+// Telegram only allows ONE active getUpdates connection per bot token — running the poller in
+// both a local dev server and the deployed Railway instance at the same time makes them fight
+// over it, and whichever one wins a given poll cycle processes that update against ITS OWN
+// database. In practice this silently verified people in a local throwaway database while the
+// real, deployed site never saw it. Railway sets RAILWAY_ENVIRONMENT at runtime; local dev never
+// has it, so by default only the actually-deployed instance polls. Set ENABLE_TELEGRAM_POLLER=true
+// locally to explicitly opt in when you really do need to test the live poller from your machine —
+// but only when you're sure nothing else (including the deployed instance) is also polling it.
+function shouldPollTelegram(): boolean {
+  return Boolean(process.env.RAILWAY_ENVIRONMENT) || process.env.ENABLE_TELEGRAM_POLLER === "true";
+}
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  void startTelegramPoller();
+  if (shouldPollTelegram()) {
+    void startTelegramPoller();
+  } else {
+    console.log(
+      "[telegram] Skipping the Telegram poller on this instance (not Railway, ENABLE_TELEGRAM_POLLER not set) " +
+        "so it doesn't fight the deployed instance for the bot's single connection. Sending messages still works normally."
+    );
+  }
   startApiServer();
 }
 
