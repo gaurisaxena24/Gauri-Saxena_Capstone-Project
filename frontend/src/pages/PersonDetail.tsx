@@ -1,18 +1,20 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { getPerson, updatePerson, type PersonDetail as PersonDetailData } from "../api/client";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { getPerson, removePerson, updatePerson, type PersonDetail as PersonDetailData } from "../api/client";
 import { formatCurrency, formatDate } from "../lib/format";
 import { StatusBadge } from "../components/StatusBadge";
 import { ErrorBanner } from "../components/ErrorBanner";
 
 export function PersonDetail() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const [person, setPerson] = useState<PersonDetailData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [editFields, setEditFields] = useState({ name: "", relationship: "", notes: "", phoneNumber: "" });
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [removing, setRemoving] = useState(false);
 
   function load() {
     setError(null);
@@ -51,6 +53,33 @@ export function PersonDetail() {
       load();
     } finally {
       setChecking(false);
+    }
+  }
+
+  async function handleRemove() {
+    if (!person) return;
+    if (person.debts.length > 0) {
+      window.alert(
+        `${person.name} still has ${person.debts.length} debt(s). Remove ${
+          person.debts.length === 1 ? "it" : "them"
+        } first (below), then you can delete this person.`
+      );
+      return;
+    }
+    if (
+      !window.confirm(
+        `Remove ${person.name} (@${person.telegramUsername})?\n\nThis does not affect any of their expenses.`
+      )
+    ) {
+      return;
+    }
+    setRemoving(true);
+    try {
+      await removePerson(person.id);
+      navigate("/people");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't remove this person.");
+      setRemoving(false);
     }
   }
 
@@ -171,6 +200,15 @@ export function PersonDetail() {
           ))}
         </div>
       )}
+
+      <button
+        type="button"
+        onClick={handleRemove}
+        disabled={removing}
+        className="mt-6 rounded-full border border-border px-5 py-2 text-sm font-medium text-ink-soft hover:border-[var(--color-danger)]/40 hover:text-[var(--color-danger)] disabled:opacity-40"
+      >
+        {removing ? "Removing…" : "Remove person"}
+      </button>
     </div>
   );
 }

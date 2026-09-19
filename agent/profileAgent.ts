@@ -41,3 +41,7 @@ export function editPerson(
 export function isTelegramVerified(person: Person): boolean {
   return profileSkill.isTelegramVerified(person);
 }
+
+export function removePerson(id: number): boolean {
+  return profileSkill.removePerson(id);
+}

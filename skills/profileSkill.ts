@@ -6,6 +6,7 @@
 
 import {
   createPerson,
+  deletePerson,
   getOrCreatePerson,
   getPerson,
   getPersonByUsername,
@@ -53,4 +54,9 @@ export function editPerson(
 /** A person can be sent to for real only once the poller has seen a genuine incoming message from them. */
 export function isTelegramVerified(person: Person): boolean {
   return Boolean(person.telegram_verified);
+}
+
+/** Removes a person and only that person — never their expenses/debts (a real DB foreign key blocks this while any debt still references them). */
+export function removePerson(id: number): boolean {
+  return deletePerson(id);
 }

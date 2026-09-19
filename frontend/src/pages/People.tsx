@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { createPerson, listPeople, type PersonSummary } from "../api/client";
+import { createPerson, listPeople, removePerson, type PersonSummary } from "../api/client";
 import { formatCurrency } from "../lib/format";
 import { ErrorBanner } from "../components/ErrorBanner";
 
@@ -8,6 +8,8 @@ export function People() {
   const [people, setPeople] = useState<PersonSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [removingId, setRemovingId] = useState<number | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [telegramUsername, setTelegramUsername] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
@@ -54,6 +56,26 @@ export function People() {
     }
   }
 
+  async function handleRemove(person: PersonSummary) {
+    if (
+      !window.confirm(
+        `Remove ${person.name} (@${person.telegramUsername})?\n\nThis does not affect any of their expenses. If a debt is still drafted for them, removal will be blocked until that debt is removed first.`
+      )
+    ) {
+      return;
+    }
+    setRemoveError(null);
+    setRemovingId(person.id);
+    try {
+      await removePerson(person.id);
+      setPeople((prev) => prev?.filter((p) => p.id !== person.id) ?? prev);
+    } catch (err) {
+      setRemoveError(err instanceof Error ? err.message : "Couldn't remove this person.");
+    } finally {
+      setRemovingId(null);
+    }
+  }
+
   return (
     <div>
       <div className="mb-6 flex items-center justify-between">
@@ -94,6 +116,7 @@ export function People() {
       )}
 
       {error && <ErrorBanner message={error} onRetry={load} />}
+      {removeError && <div className="mb-4"><ErrorBanner message={removeError} /></div>}
 
       {people && people.length === 0 && !adding && (
         <div className="rounded-2xl border border-dashed border-border p-8 text-center text-sm text-ink-soft">
@@ -103,29 +126,41 @@ export function People() {
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {people?.map((person) => (
-          <Link
+          <div
             key={person.id}
-            to={`/people/${person.id}`}
-            className="flex items-center justify-between rounded-2xl border border-border bg-card p-5 transition-colors hover:border-ink/30"
+            className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-card p-5"
           >
-            <div>
-              <p className="font-medium text-ink">{person.name}</p>
-              <p className="text-sm text-ink-faint">
-                @{person.telegramUsername} · {person.relationship ?? "—"}
-              </p>
-              <p className="mt-1 text-xs">
-                {person.telegramVerified ? (
-                  <span className="text-[var(--color-success)]">Telegram verified</span>
-                ) : (
-                  <span className="text-ink-faint">Not verified yet</span>
-                )}
-              </p>
-            </div>
-            <div className="text-right">
-              <p className="font-display text-lg font-bold text-ink">{formatCurrency(person.totalOwed)}</p>
-              <p className="text-xs text-ink-faint">currently owed</p>
-            </div>
-          </Link>
+            <Link
+              to={`/people/${person.id}`}
+              className="flex flex-1 items-center justify-between gap-3 transition-colors hover:opacity-80"
+            >
+              <div>
+                <p className="font-medium text-ink">{person.name}</p>
+                <p className="text-sm text-ink-faint">
+                  @{person.telegramUsername} · {person.relationship ?? "—"}
+                </p>
+                <p className="mt-1 text-xs">
+                  {person.telegramVerified ? (
+                    <span className="text-[var(--color-success)]">Telegram verified</span>
+                  ) : (
+                    <span className="text-ink-faint">Not verified yet</span>
+                  )}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="font-display text-lg font-bold text-ink">{formatCurrency(person.totalOwed)}</p>
+                <p className="text-xs text-ink-faint">currently owed</p>
+              </div>
+            </Link>
+            <button
+              type="button"
+              onClick={() => handleRemove(person)}
+              disabled={removingId === person.id}
+              className="shrink-0 rounded-full border border-border px-3 py-1.5 text-xs font-medium text-ink-soft hover:border-[var(--color-danger)]/40 hover:text-[var(--color-danger)] disabled:opacity-40"
+            >
+              {removingId === person.id ? "Removing…" : "Remove"}
+            </button>
+          </div>
         ))}
       </div>
     </div>
