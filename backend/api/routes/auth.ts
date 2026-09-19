@@ -9,13 +9,13 @@ export const authRouter = Router();
  * in. It exists purely to identify which local user is using the app on
  * this machine, per the project's single-user local MVP scope.
  */
-authRouter.post("/login", (req, res) => {
+authRouter.post("/login", async (req, res) => {
   const telegramUsername = String(req.body?.telegramUsername ?? "").trim();
   if (!telegramUsername) {
     res.status(400).json({ error: "Enter your Telegram username to continue." });
     return;
   }
 
-  const user = upsertUser(telegramUsername);
+  const user = await upsertUser(telegramUsername);
   res.json({ id: user.id, telegramUsername: user.telegram_username });
 });

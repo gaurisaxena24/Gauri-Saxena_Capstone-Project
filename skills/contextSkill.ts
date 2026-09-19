@@ -29,33 +29,37 @@ function shortReason(text: string): string {
   return oneLine.length > MAX_REASON_LENGTH ? `${oneLine.slice(0, MAX_REASON_LENGTH).trim()}…` : oneLine;
 }
 
-export function buildReminderContext(params: {
+export async function buildReminderContext(params: {
   person: Person;
   expense: Expense;
   debt: ExpenseDebt;
-}): ReminderContext {
+}): Promise<ReminderContext> {
   const { person, expense, debt } = params;
-  const priorDebts = getDebtsByPerson(person.id).filter((d) => d.id !== debt.id);
+  const [allDebts, allReminders] = await Promise.all([
+    getDebtsByPerson(person.id),
+    getRemindersForPerson(person.id),
+  ]);
+  const priorDebts = allDebts.filter((d) => d.id !== debt.id);
   // getRemindersForPerson orders newest-first, so this filter preserves that order — [0] is the
   // most recently sent reminder to this person, for anything but the debt being messaged about now.
-  const priorReminders = getRemindersForPerson(person.id).filter(
-    (r) => r.status === "SENT" && r.debt_id !== debt.id
-  );
+  const priorReminders = allReminders.filter((r) => r.status === "SENT" && r.debt_id !== debt.id);
   const lastReminderTone = isTone(priorReminders[0]?.tone ?? null) ? (priorReminders[0].tone as Tone) : null;
 
-  const otherOpenDebts = priorDebts
-    .filter((d) => d.status === "UNPAID")
-    .slice(0, 5)
-    .map((d) => {
-      const otherExpense = getExpenseById(d.expense_id);
-      return {
-        amount: d.amount,
-        reason: shortReason(
-          otherExpense?.description ?? otherExpense?.merchant ?? otherExpense?.category ?? "a shared expense"
-        ),
-        daysOutstanding: daysBetween(new Date(d.created_at), new Date()),
-      };
-    });
+  const otherOpenDebts = await Promise.all(
+    priorDebts
+      .filter((d) => d.status === "UNPAID")
+      .slice(0, 5)
+      .map(async (d) => {
+        const otherExpense = await getExpenseById(d.expense_id);
+        return {
+          amount: d.amount,
+          reason: shortReason(
+            otherExpense?.description ?? otherExpense?.merchant ?? otherExpense?.category ?? "a shared expense"
+          ),
+          daysOutstanding: daysBetween(new Date(d.created_at), new Date()),
+        };
+      })
+  );
 
   return {
     person: {

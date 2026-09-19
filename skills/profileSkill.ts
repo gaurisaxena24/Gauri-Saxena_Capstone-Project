@@ -24,30 +24,30 @@ export interface CreatePersonInput {
   phoneNumber?: string;
 }
 
-export function addPerson(input: CreatePersonInput): Person {
+export function addPerson(input: CreatePersonInput): Promise<Person> {
   return createPerson(input);
 }
 
-export function findOrCreatePerson(input: CreatePersonInput): Person {
+export function findOrCreatePerson(input: CreatePersonInput): Promise<Person> {
   return getOrCreatePerson(input);
 }
 
-export function findPersonById(id: number): Person | undefined {
+export function findPersonById(id: number): Promise<Person | undefined> {
   return getPerson(id);
 }
 
-export function findPersonByUsername(telegramUsername: string): Person | undefined {
+export function findPersonByUsername(telegramUsername: string): Promise<Person | undefined> {
   return getPersonByUsername(telegramUsername);
 }
 
-export function listPeople(): PersonWithStats[] {
+export function listPeople(): Promise<PersonWithStats[]> {
   return listPeopleWithStats();
 }
 
 export function editPerson(
   id: number,
   patch: Partial<{ name: string; relationship: string | null; notes: string | null; phoneNumber: string | null }>
-): Person | undefined {
+): Promise<Person | undefined> {
   return updatePerson(id, patch);
 }
 
@@ -57,6 +57,6 @@ export function isTelegramVerified(person: Person): boolean {
 }
 
 /** Removes a person and only that person — never their expenses/debts (a real DB foreign key blocks this while any debt still references them). */
-export function removePerson(id: number): boolean {
+export function removePerson(id: number): Promise<boolean> {
   return deletePerson(id);
 }

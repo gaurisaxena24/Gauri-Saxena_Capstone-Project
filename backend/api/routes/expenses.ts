@@ -53,7 +53,7 @@ function toExpensePayload(
 }
 
 /** Manual entry — never touches Groq. */
-expensesRouter.post("/", (req, res) => {
+expensesRouter.post("/", async (req, res) => {
   const { amount, currency, date, merchant, category, description, paymentMethod, notes } = req.body ?? {};
   const total = Number(amount);
   if (!Number.isFinite(total) || total <= 0) {
@@ -61,7 +61,7 @@ expensesRouter.post("/", (req, res) => {
     return;
   }
 
-  const expense = agent.createManualExpense({
+  const expense = await agent.createManualExpense({
     amount: total,
     currency: currency || "INR",
     date: date || null,
@@ -108,7 +108,7 @@ expensesRouter.post("/extract", (req, res) => {
       const { extraction, method, extractionFailed } = await agent.readImageExpense(imageBuffer, mediaType);
       debugLog(`extraction done via ${method}, extractionFailed=${Boolean(extractionFailed)}, items=${extraction.lineItems.length}`);
 
-      const expense = agent.createImageExpense({ extraction, method, imagePath: req.file.path });
+      const expense = await agent.createImageExpense({ extraction, method, imagePath: req.file.path });
       res.status(201).json(toExpensePayload(expense, { extractionMethod: method, extractionFailed }));
     } catch (error) {
       await cleanupUpload();
@@ -127,23 +127,24 @@ expensesRouter.post("/extract", (req, res) => {
   });
 });
 
-expensesRouter.get("/", (_req, res) => {
-  res.json({ expenses: debtSkill.listAllExpenses().map((e) => toExpensePayload(e)) });
+expensesRouter.get("/", async (_req, res) => {
+  const expenses = await debtSkill.listAllExpenses();
+  res.json({ expenses: expenses.map((e) => toExpensePayload(e)) });
 });
 
-expensesRouter.get("/:id", (req, res) => {
-  const expense = debtSkill.getExpenseById(Number(req.params.id));
+expensesRouter.get("/:id", async (req, res) => {
+  const expense = await debtSkill.getExpenseById(Number(req.params.id));
   if (!expense) {
     res.status(404).json({ error: "Expense not found." });
     return;
   }
-  const debts = debtSkill.getDebtsByExpense(expense.id);
+  const debts = await debtSkill.getDebtsByExpense(expense.id);
   res.json({ ...toExpensePayload(expense), debtIds: debts.map((d) => d.id) });
 });
 
-expensesRouter.patch("/:id", (req, res) => {
+expensesRouter.patch("/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const existing = debtSkill.getExpenseById(id);
+  const existing = await debtSkill.getExpenseById(id);
   if (!existing) {
     res.status(404).json({ error: "Expense not found." });
     return;
@@ -164,7 +165,7 @@ expensesRouter.patch("/:id", (req, res) => {
     description,
     lineItems,
   } = req.body ?? {};
-  const updated = debtSkill.editExpense(id, {
+  const updated = await debtSkill.editExpense(id, {
     merchant: merchant !== undefined ? merchant : undefined,
     expenseDate: date !== undefined ? date : undefined,
     total: total !== undefined ? Number(total) : undefined,
@@ -192,7 +193,7 @@ expensesRouter.patch("/:id", (req, res) => {
  */
 expensesRouter.delete("/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const attachedDebts = debtSkill.getDebtsByExpense(id);
+  const attachedDebts = await debtSkill.getDebtsByExpense(id);
   if (attachedDebts.length > 0) {
     res.status(409).json({
       error: `This expense has ${attachedDebts.length} debt(s) still attached. Remove ${
@@ -201,7 +202,7 @@ expensesRouter.delete("/:id", async (req, res) => {
     });
     return;
   }
-  const removed = agent.removeExpense(id);
+  const removed = await agent.removeExpense(id);
   if (!removed) {
     res.status(404).json({ error: "Expense not found." });
     return;

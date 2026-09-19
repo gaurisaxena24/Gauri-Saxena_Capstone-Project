@@ -11,30 +11,30 @@ import type { CreatePersonInput } from "../skills/profileSkill.js";
 
 export type { CreatePersonInput };
 
-export function addPerson(input: CreatePersonInput): Person {
+export function addPerson(input: CreatePersonInput): Promise<Person> {
   return profileSkill.addPerson(input);
 }
 
-export function findOrCreatePerson(input: CreatePersonInput): Person {
+export function findOrCreatePerson(input: CreatePersonInput): Promise<Person> {
   return profileSkill.findOrCreatePerson(input);
 }
 
-export function findPersonById(id: number): Person | undefined {
+export function findPersonById(id: number): Promise<Person | undefined> {
   return profileSkill.findPersonById(id);
 }
 
-export function findPersonByUsername(telegramUsername: string): Person | undefined {
+export function findPersonByUsername(telegramUsername: string): Promise<Person | undefined> {
   return profileSkill.findPersonByUsername(telegramUsername);
 }
 
-export function listPeople(): PersonWithStats[] {
+export function listPeople(): Promise<PersonWithStats[]> {
   return profileSkill.listPeople();
 }
 
 export function editPerson(
   id: number,
   patch: Partial<{ name: string; relationship: string | null; notes: string | null; phoneNumber: string | null }>
-): Person | undefined {
+): Promise<Person | undefined> {
   return profileSkill.editPerson(id, patch);
 }
 
@@ -42,6 +42,6 @@ export function isTelegramVerified(person: Person): boolean {
   return profileSkill.isTelegramVerified(person);
 }
 
-export function removePerson(id: number): boolean {
+export function removePerson(id: number): Promise<boolean> {
   return profileSkill.removePerson(id);
 }

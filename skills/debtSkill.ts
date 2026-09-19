@@ -50,20 +50,20 @@ export interface NewExpenseInput {
   confidence?: number | null;
 }
 
-export function recordExpense(input: NewExpenseInput): Expense {
+export function recordExpense(input: NewExpenseInput): Promise<Expense> {
   return createExpense(input);
 }
 
-export function getExpenseById(id: number): Expense | undefined {
+export function getExpenseById(id: number): Promise<Expense | undefined> {
   return getExpense(id);
 }
 
-export function listAllExpenses(limit?: number): Expense[] {
+export function listAllExpenses(limit?: number): Promise<Expense[]> {
   return listExpenses(limit);
 }
 
 /** Removes an expense and only that expense — never `people`, never the debts drafted against it. */
-export function removeExpense(id: number): { imagePath: string | null } | undefined {
+export function removeExpense(id: number): Promise<{ imagePath: string | null } | undefined> {
   return deleteExpense(id);
 }
 
@@ -84,7 +84,7 @@ export function editExpense(
     description: string | null;
     lineItems: ExpenseLineItem[];
   }>
-): Expense | undefined {
+): Promise<Expense | undefined> {
   return updateExpense(id, patch);
 }
 
@@ -98,42 +98,42 @@ export function attachDebt(input: {
   desiredAction: string | null;
   contextJson: unknown;
   selectedItems?: Array<{ name: string; amount: number }> | null;
-}): ExpenseDebt {
+}): Promise<ExpenseDebt> {
   return createExpenseDebt(input);
 }
 
-export function getDebt(id: number): ExpenseDebt | undefined {
+export function getDebt(id: number): Promise<ExpenseDebt | undefined> {
   return getExpenseDebt(id);
 }
 
-export function getDebtsByExpense(expenseId: number): ExpenseDebt[] {
+export function getDebtsByExpense(expenseId: number): Promise<ExpenseDebt[]> {
   return getDebtsForExpense(expenseId);
 }
 
-export function getDebtsByPerson(personId: number): ExpenseDebt[] {
+export function getDebtsByPerson(personId: number): Promise<ExpenseDebt[]> {
   return getDebtsForPerson(personId);
 }
 
-export function listAllDebts(limit?: number): ExpenseDebt[] {
+export function listAllDebts(limit?: number): Promise<ExpenseDebt[]> {
   return listRecentDebts(limit);
 }
 
-export function saveContext(debtId: number, context: unknown): ExpenseDebt | undefined {
+export function saveContext(debtId: number, context: unknown): Promise<ExpenseDebt | undefined> {
   return updateDebtContext(debtId, context);
 }
 
 export function saveDraftMessage(
   debtId: number,
   patch: { message: string; tone: string | null; edited: boolean }
-): ExpenseDebt | undefined {
+): Promise<ExpenseDebt | undefined> {
   return updateDebtDraftMessage(debtId, patch);
 }
 
-export function markPaid(debtId: number, status: DebtStatus = "PAID"): ExpenseDebt | undefined {
+export function markPaid(debtId: number, status: DebtStatus = "PAID"): Promise<ExpenseDebt | undefined> {
   return setDebtStatus(debtId, status);
 }
 
 /** Removes a debt ("send request") and its own send-history only — never the person or expense it references. */
-export function removeDebt(debtId: number): boolean {
+export function removeDebt(debtId: number): Promise<boolean> {
   return deleteExpenseDebt(debtId);
 }
