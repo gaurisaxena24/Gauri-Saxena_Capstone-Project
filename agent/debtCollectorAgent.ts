@@ -38,7 +38,7 @@ export function createManualExpense(input: {
   description: string | null;
   paymentMethod: string | null;
   notes: string | null;
-}): Expense {
+}): Promise<Expense> {
   return debtAgent.recordExpense({
     source: "MANUAL",
     merchant: input.merchant,
@@ -62,7 +62,7 @@ export function createImageExpense(params: {
   extraction: ExpenseExtraction;
   method: ExtractionMethod;
   imagePath: string;
-}): Expense {
+}): Promise<Expense> {
   const { extraction } = params;
   return debtAgent.recordExpense({
     source: "IMAGE",
@@ -87,7 +87,7 @@ export function createImageExpense(params: {
   });
 }
 
-export function attachPersonToExpense(params: {
+export async function attachPersonToExpense(params: {
   expenseId: number;
   personId: number;
   mode: ShareMode;
@@ -95,14 +95,14 @@ export function attachPersonToExpense(params: {
   additionalContext?: string | null;
   desiredAction?: string | null;
   selectedItems?: Array<{ name: string; amount: number }> | null;
-}): { debt: ExpenseDebt; context: ReminderContext } {
-  const expense = debtAgent.getExpenseById(params.expenseId);
+}): Promise<{ debt: ExpenseDebt; context: ReminderContext }> {
+  const expense = await debtAgent.getExpenseById(params.expenseId);
   if (!expense) throw new Error("Expense not found.");
-  const person = profileAgent.findPersonById(params.personId);
+  const person = await profileAgent.findPersonById(params.personId);
   if (!person) throw new Error("Person not found.");
 
   const amount = debtCalculationAgent.calculateShare(params.mode, expense.total, params.customAmount);
-  const debt = debtAgent.attachDebt({
+  const debt = await debtAgent.attachDebt({
     expenseId: expense.id,
     personId: person.id,
     amount,
@@ -114,10 +114,10 @@ export function attachPersonToExpense(params: {
     selectedItems: params.selectedItems ?? null,
   });
 
-  const context = contextAgent.buildContext({ person, expense, debt });
+  const context = await contextAgent.buildContext({ person, expense, debt });
   // Persisted so regenerate/change-tone reuse the exact same facts rather
   // than drifting between calls.
-  const withContext = debtAgent.saveContext(debt.id, context)!;
+  const withContext = (await debtAgent.saveContext(debt.id, context))!;
   return { debt: withContext, context };
 }
 
@@ -126,13 +126,20 @@ export async function generateDraft(params: {
   context: ReminderContext;
   forcedTone?: Tone;
   regenerate?: boolean;
+  /** Set only by the automatic reminder scheduler for an escalating follow-up — see skills/escalationSkill.ts. */
+  escalationNote?: string;
 }) {
+  // Automatic escalation (escalationNote set) always needs the literal previous message too — see
+  // buildReminderPrompt's escalation-aware branch — not just a manual "Regenerate" click.
+  const previousMessage =
+    params.regenerate || params.escalationNote ? params.debt.message ?? undefined : undefined;
   const generated = await messageDraftAgent.draftMessage({
     context: params.context,
     forcedTone: params.forcedTone,
-    previousMessage: params.regenerate ? (params.debt.message ?? undefined) : undefined,
+    previousMessage,
+    escalationNote: params.escalationNote,
   });
-  const updated = debtAgent.saveDraftMessage(params.debt.id, {
+  const updated = await debtAgent.saveDraftMessage(params.debt.id, {
     message: generated.message,
     tone: generated.tone,
     edited: false,
@@ -140,8 +147,8 @@ export async function generateDraft(params: {
   return { debt: updated!, reasoning: generated.reasoning };
 }
 
-export function editDraft(debtId: number, message: string) {
-  const debt = debtAgent.getDebt(debtId);
+export async function editDraft(debtId: number, message: string) {
+  const debt = await debtAgent.getDebt(debtId);
   return debtAgent.saveDraftMessage(debtId, { message, tone: debt?.tone ?? null, edited: true });
 }
 
@@ -151,7 +158,7 @@ export async function sendReminder(debt: ExpenseDebt, person: Person) {
   try {
     const result = await telegramAgent.sendMessage(person, debt.message);
     if (!result.success) {
-      reminderAgent.logReminder({
+      await reminderAgent.logReminder({
         debtId: debt.id,
         personId: person.id,
         message: debt.message,
@@ -160,7 +167,7 @@ export async function sendReminder(debt: ExpenseDebt, person: Person) {
       });
       return { success: false, error: result.message };
     }
-    const reminder = reminderAgent.logReminder({
+    const reminder = await reminderAgent.logReminder({
       debtId: debt.id,
       personId: person.id,
       message: debt.message,
@@ -170,7 +177,7 @@ export async function sendReminder(debt: ExpenseDebt, person: Person) {
     });
     return { success: true, reminder };
   } catch (error) {
-    reminderAgent.logReminder({
+    await reminderAgent.logReminder({
       debtId: debt.id,
       personId: person.id,
       message: debt.message,
@@ -181,21 +188,58 @@ export async function sendReminder(debt: ExpenseDebt, person: Person) {
   }
 }
 
-export function markDebtPaid(debtId: number) {
-  return debtAgent.markPaid(debtId, "PAID");
+/**
+ * Marking a debt paid does two things beyond the status update itself: it implicitly stops all
+ * future automatic reminders (backend/reminders/scheduler.ts only ever picks up debts still
+ * UNPAID, so no separate "cancel" step exists or is needed), and — only on a genuine UNPAID→PAID
+ * transition — sends one short thank-you message. Calling this on a debt that's already PAID (a
+ * repeat call, e.g. a duplicate button click) is a no-op with respect to messaging: the status is
+ * simply re-confirmed and no second thank-you is ever sent, since "already PAID before this call"
+ * is exactly the condition checked below.
+ */
+export async function markDebtPaid(debtId: number): Promise<ExpenseDebt | undefined> {
+  const before = await debtAgent.getDebt(debtId);
+  if (!before) return undefined;
+  const wasAlreadyPaid = before.status === "PAID";
+
+  const updated = await debtAgent.markPaid(debtId, "PAID");
+  if (!updated || wasAlreadyPaid) return updated;
+
+  try {
+    const person = await profileAgent.findPersonById(updated.person_id);
+    if (!person || !profileAgent.isTelegramVerified(person)) return updated; // nothing to send to
+    const expense = await debtAgent.getExpenseById(updated.expense_id);
+    if (!expense) return updated;
+
+    const context = await contextAgent.buildContext({ person, expense, debt: updated });
+    const message = await messageDraftAgent.draftThankYou(context);
+    const result = await telegramAgent.sendMessage(person, message);
+    await reminderAgent.logReminder({
+      debtId: updated.id,
+      personId: person.id,
+      message,
+      tone: null,
+      status: result.success ? "SENT" : "FAILED",
+      telegramMessageId: result.success ? result.telegramMessageId : undefined,
+    });
+  } catch (error) {
+    // The paid status change must succeed regardless of whether the thank-you could be sent.
+    console.error(`[debtCollectorAgent] Couldn't send the thank-you message for debt ${debtId}:`, error);
+  }
+  return updated;
 }
 
 /** Removes a debt ("send request") only — the person and expense it references are always left untouched. */
-export function removeDebt(debtId: number): boolean {
+export function removeDebt(debtId: number): Promise<boolean> {
   return debtAgent.removeDebt(debtId);
 }
 
 /** Removes an expense only — never the person. Fails (a real DB foreign key) if any debt still references it; remove those debts first. */
-export function removeExpense(expenseId: number): { imagePath: string | null } | undefined {
+export function removeExpense(expenseId: number): Promise<{ imagePath: string | null } | undefined> {
   return debtAgent.removeExpense(expenseId);
 }
 
 /** Removes a person only — never their expenses. Fails (a real DB foreign key) if any debt still references them; remove those debts first. */
-export function removePerson(personId: number): boolean {
+export function removePerson(personId: number): Promise<boolean> {
   return profileAgent.removePerson(personId);
 }

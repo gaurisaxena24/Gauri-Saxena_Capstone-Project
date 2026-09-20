@@ -15,9 +15,11 @@ function isTone(value: unknown): value is Tone {
   return typeof value === "string" && (TONES as readonly string[]).includes(value);
 }
 
-function toDebtPayload(debt: ExpenseDebt) {
-  const expense = debtSkill.getExpenseById(debt.expense_id);
-  const person = profileSkill.findPersonById(debt.person_id);
+async function toDebtPayload(debt: ExpenseDebt) {
+  const [expense, person] = await Promise.all([
+    debtSkill.getExpenseById(debt.expense_id),
+    profileSkill.findPersonById(debt.person_id),
+  ]);
   return {
     id: debt.id,
     expenseId: debt.expense_id,
@@ -52,11 +54,11 @@ function isSelectedItems(value: unknown): value is Array<{ name: string; amount:
 }
 
 /** Person + share decision on an existing expense → creates the debt and its cached AI context. */
-debtsRouter.post("/", (req, res) => {
+debtsRouter.post("/", async (req, res) => {
   const { expenseId, personId, mode, customAmount, additionalContext, desiredAction, selectedItems } =
     req.body ?? {};
   try {
-    const { debt } = agent.attachPersonToExpense({
+    const { debt } = await agent.attachPersonToExpense({
       expenseId: Number(expenseId),
       personId: Number(personId),
       mode: mode as ShareMode,
@@ -65,7 +67,7 @@ debtsRouter.post("/", (req, res) => {
       desiredAction: desiredAction ?? null,
       selectedItems: isSelectedItems(selectedItems) ? selectedItems : null,
     });
-    res.status(201).json(toDebtPayload(debt));
+    res.status(201).json(await toDebtPayload(debt));
   } catch (error) {
     if (error instanceof InvalidShareError) {
       res.status(400).json({ error: error.message });
@@ -76,29 +78,34 @@ debtsRouter.post("/", (req, res) => {
   }
 });
 
-debtsRouter.get("/", (_req, res) => {
-  res.json({ debts: debtSkill.listAllDebts().map(toDebtPayload) });
+debtsRouter.get("/", async (_req, res) => {
+  const debts = await debtSkill.listAllDebts();
+  res.json({ debts: await Promise.all(debts.map(toDebtPayload)) });
 });
 
-debtsRouter.get("/:id", (req, res) => {
-  const debt = debtSkill.getDebt(Number(req.params.id));
+debtsRouter.get("/:id", async (req, res) => {
+  const debt = await debtSkill.getDebt(Number(req.params.id));
   if (!debt) {
     res.status(404).json({ error: "Debt not found." });
     return;
   }
-  const expense = debtSkill.getExpenseById(debt.expense_id);
-  const person = profileSkill.findPersonById(debt.person_id);
+  const [payload, expense, person, reminders] = await Promise.all([
+    toDebtPayload(debt),
+    debtSkill.getExpenseById(debt.expense_id),
+    profileSkill.findPersonById(debt.person_id),
+    reminderSkill.historyForDebt(debt.id),
+  ]);
   res.json({
-    ...toDebtPayload(debt),
+    ...payload,
     context: debt.context_json ? JSON.parse(debt.context_json) : null,
     expense,
     person,
-    reminders: reminderSkill.historyForDebt(debt.id),
+    reminders,
   });
 });
 
 debtsRouter.post("/:id/generate-message", async (req, res) => {
-  const debt = debtSkill.getDebt(Number(req.params.id));
+  const debt = await debtSkill.getDebt(Number(req.params.id));
   if (!debt) {
     res.status(404).json({ error: "Debt not found." });
     return;
@@ -122,7 +129,7 @@ debtsRouter.post("/:id/generate-message", async (req, res) => {
       forcedTone,
       regenerate: Boolean(regenerate),
     });
-    res.json({ ...toDebtPayload(updated), reasoning });
+    res.json({ ...(await toDebtPayload(updated)), reasoning });
   } catch (error) {
     if (error instanceof AiNotConfiguredError) {
       res.status(503).json({ error: error.message, aiNotConfigured: true });
@@ -138,8 +145,8 @@ debtsRouter.post("/:id/generate-message", async (req, res) => {
   }
 });
 
-debtsRouter.patch("/:id/message", (req, res) => {
-  const debt = debtSkill.getDebt(Number(req.params.id));
+debtsRouter.patch("/:id/message", async (req, res) => {
+  const debt = await debtSkill.getDebt(Number(req.params.id));
   if (!debt) {
     res.status(404).json({ error: "Debt not found." });
     return;
@@ -149,17 +156,17 @@ debtsRouter.patch("/:id/message", (req, res) => {
     res.status(400).json({ error: "Message cannot be empty." });
     return;
   }
-  const updated = agent.editDraft(debt.id, message);
-  res.json(toDebtPayload(updated!));
+  const updated = await agent.editDraft(debt.id, message);
+  res.json(await toDebtPayload(updated!));
 });
 
 debtsRouter.post("/:id/send", async (req, res) => {
-  const debt = debtSkill.getDebt(Number(req.params.id));
+  const debt = await debtSkill.getDebt(Number(req.params.id));
   if (!debt) {
     res.status(404).json({ error: "Debt not found." });
     return;
   }
-  const person = profileSkill.findPersonById(debt.person_id);
+  const person = await profileSkill.findPersonById(debt.person_id);
   if (!person) {
     res.status(400).json({ error: "This debt has no linked person." });
     return;
@@ -168,7 +175,8 @@ debtsRouter.post("/:id/send", async (req, res) => {
   // Idempotency guard against a genuine double-send (two rapid clicks, two tabs, a retried
   // request) — the database, not just the frontend's disabled-button state, is the source of
   // truth for whether this debt has already been sent.
-  const alreadySent = reminderSkill.historyForDebt(debt.id).some((r) => r.status === "SENT");
+  const history = await reminderSkill.historyForDebt(debt.id);
+  const alreadySent = history.some((r) => r.status === "SENT");
   if (alreadySent) {
     res.json({ success: true, note: "Already sent via Telegram." });
     return;
@@ -191,18 +199,18 @@ debtsRouter.post("/:id/send", async (req, res) => {
   }
 });
 
-debtsRouter.post("/:id/paid", (req, res) => {
-  const updated = agent.markDebtPaid(Number(req.params.id));
+debtsRouter.post("/:id/paid", async (req, res) => {
+  const updated = await agent.markDebtPaid(Number(req.params.id));
   if (!updated) {
     res.status(404).json({ error: "Debt not found." });
     return;
   }
-  res.json(toDebtPayload(updated));
+  res.json(await toDebtPayload(updated));
 });
 
 /** Removes this debt ("send request") and its own send-history only — never the person or expense it references. */
-debtsRouter.delete("/:id", (req, res) => {
-  const removed = agent.removeDebt(Number(req.params.id));
+debtsRouter.delete("/:id", async (req, res) => {
+  const removed = await agent.removeDebt(Number(req.params.id));
   if (!removed) {
     res.status(404).json({ error: "Debt not found." });
     return;

@@ -28,6 +28,8 @@
   --color-tone-passive-soft: #fbeadf;
   --color-tone-unhinged: #c22b2b;
   --color-tone-unhinged-soft: #fbe7e7;
+  --color-tone-angry: #7a1f1f;
+  --color-tone-angry-soft: #f3dcdc;
 }
 
 html {

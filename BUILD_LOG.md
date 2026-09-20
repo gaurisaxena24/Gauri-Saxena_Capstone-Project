@@ -514,14 +514,13 @@ Clicking into an expense from the Expenses list looked like a text file, not cle
 
 **Testing / verification:** Frontend and backend both build clean. Confirmed visually in the browser against real user data (not synthetic test data) that the specific "text file" case is fixed.
 
-**Claude Code token usage:** Not available.
+
 
 **Notes / issues:** None outstanding.
 
 ## 2026-09-19
 ### Task: Richer person memory + genuinely human-sounding reminders
 
-**What I asked Claude Code to do:**
 Make the system remember a person across separate debts (without merging old and new debts together) and rewrite message generation so reminders read like a real text from a friend, not four AI-template tones.
 
 **What Claude Code did:**
@@ -547,7 +546,6 @@ Make the system remember a person across separate debts (without merging old and
 7. Confirmed existing behavior is unchanged: sending to an unverified person is still blocked with the same error, and marking a debt paid still works.
 All test people/expenses/debts/reminders were deleted from `data/debts.db` afterward — the real user's existing data was untouched.
 
-**Claude Code token usage:** Not available.
 
 **Notes / issues:** `otherOpenDebts` is capped at 5 entries for prompt size — not expected to matter in practice, but worth revisiting if someone ever has many simultaneous open debts with the same person.
 
@@ -586,7 +584,7 @@ All test people/expenses/debts and uploaded test images were deleted afterward �
 
 **Found live, by accident, while testing in the browser:** while I was mid-test, a second, real debt (`expense_debts` id 16 — Mel, ₹665.27, for "Assorted Veg Platter" + "Choice OF Juice" from a real "THE SUFFER FACTORY" receipt) appeared in the same shared `data/debts.db`, created by what all the evidence points to being the user's own concurrent, independent use of the app in an already-running dev session (PIDs from ~7:55 PM, well before this session's testing) — not by my automation (that debt's message had already been hand-edited, and reached a step my own browser session never got to). I verified this did not touch or corrupt anything: Sara's and Mel's pre-existing real debts were byte-for-byte unchanged, and I only deleted my own leftover unattached test expenses/images/login row, leaving debt 16 and everything else real exactly as it was. This was still a useful, unplanned real-world validation of the new feature (itemized OCR read at confidence 0.85 despite real OCR misreads like "Fapad"/"Preniun Whisky", correct item selection, tax handling, person-memory reference to another real debt, and a natural generated message) — but it also surfaced a real bug: that other real debt's `otherOpenDebts.reason` carried a 428-character raw OCR dump (an old expense's `description` had never been cleanly summarized) straight into the live Groq prompt. Fixed with a `shortReason()` helper in `skills/contextSkill.ts` that caps both `debt.reason` and every `otherOpenDebts[].reason` to 60 characters, regardless of how dirty the underlying stored text is — applied retroactively to old rows too, not just newly-created ones.
 
-**Claude Code token usage:** Not available.
+*
 
 **Notes / issues:** The item-selection UI's per-item editing keeps `quantity`/`unitPrice`/`price` in sync (editing quantity or unit price recomputes the line total; editing the line total directly overrides it), but there's no re-validation if a user edits quantity to 0 with a nonzero unit price — the line total simply stays whatever it was until touched again, which is harmless but slightly surprising. Separately: this session discovered there was already a dev server running from a prior/concurrent session (started well before this one) sharing the same `data/debts.db` — worth being aware that multiple `npm run dev` instances against the same project all read/write the same database file.
 
@@ -602,7 +600,6 @@ All test people/expenses/debts and uploaded test images were deleted afterward �
 - Telegram allows only one long-poll connection per bot token at a time, and whichever instance wins processes the update against *its own* database. Since divyanshi was added through the local app's database, even if her `/verify QNK9S2` message reached the bot, it was Railway's separate deployed database (which has no record of her or her code) that received it — not this local one — so it could only ever fail to match or go unseen locally.
 - Reverted `ENABLE_TELEGRAM_POLLER` back out of `.env` (leaving it retrying every 3s against a connection it can never win, while Railway is live, is pure log noise with no benefit) and restarted the dev server back to its normal quiet state.
 
-**Files created:** none.
 
 **Files modified:** none (a local-only `.env` toggle was set then reverted during diagnosis; net change is zero).
 
@@ -610,6 +607,382 @@ All test people/expenses/debts and uploaded test images were deleted afterward �
 
 **Testing / verification:** Reproduced the exact failure live: enabling the local poller and watching it immediately hit Telegram's real `Conflict` error against the real bot token, then confirmed via `ps -ef` that the only other possible source of that conflict is the deployed Railway instance (no stray local process exists). Restarted the dev server afterward and confirmed clean startup logs with the poller correctly skipped and the API serving normally on port 4000.
 
-**Claude Code token usage:** Not available.
 
 **Notes / issues:** Unresolved — needs a decision from the user: either (a) pause/stop the Railway service while testing Telegram verification locally, so the local instance can win the `getUpdates` connection and see divyanshi's code, or (b) add/verify people directly through the deployed Railway app instead of localhost, since that's the instance actually receiving Telegram messages right now. Divyanshi will need to resend her code (`QNK9S2`) after whichever path is chosen, since her original message was never seen by the database she was created in.
+
+## 2026-09-20
+### Task: Item-level partial-ownership expense splitting + payer auto-identified from session, payer's share hidden everywhere
+
+**What I asked Claude Code to do:** Replace the expense flow's old whole/half/custom-amount split (one person, one share mode) with per-item ownership: for each bill item, pick everyone who shared it (the payer can be included in that pick, for correct math), split that item's price equally among whoever's picked, sum each person's per-item shares across the whole bill, and never show the payer's own computed share anywhere in the UI — the collection/results view and the Telegram-recipient list must only ever contain other people who owe the payer money. The payer had to be identified automatically from whatever session/auth concept already exists (no new auth, no picking yourself from a list). Auth/Telegram verification/AI message generation/deployment/env vars/unrelated pages were explicitly out of scope.
+
+**What Claude Code did:**
+- Inspected the existing flow end to end first: `frontend/src/pages/AddExpenseFlow.tsx` (the whole/half/custom split UI and the old single-item-selection-for-one-person step), `backend/api/routes/{expenses,debts,auth}.ts`, `backend/database/database.ts` (schema), `skills/debtCalculationSkill.ts`, and `frontend/src/context/AuthContext.tsx`.
+- Found the existing "authenticated session" concept: `backend/api/routes/auth.ts` explicitly documents itself as a **local-development-only, single-user "login"** (`upsertUser` keyed only by a typed-in Telegram username — not real authentication) whose result (`{id, telegramUsername}`) is held in `AuthContext`/`useAuth()` and persisted to `localStorage`. There is no other user/session mechanism in this app. I used exactly this: `useAuth().user.id` is the payer's identity (`payer-${user.id}`), reported here rather than inventing new auth, per the task's instruction to say so explicitly if the app has no real multi-user auth.
+- Found that `expense_debts` already has **no concept of the payer as a row at all** — every row is already "person X owes the payer," and the schema/comments already say multiple `expense_debts` rows against the same expense are expected (multiple people). This meant the entire feature could be built as a **frontend-only** change, calling the existing `POST /debts` (mode `"CUSTOM"`, computed `customAmount`, `selectedItems`), `generate-message`, `message` (edit), and `send` endpoints exactly as before, once per non-payer person — no backend/schema changes needed.
+- Rewrote `frontend/src/pages/AddExpenseFlow.tsx`:
+  - Removed the old whole/half/custom `ShareMode`/`SplitMode` UI and the old single-item-selection-for-one-person step entirely.
+  - Replaced the single-select "who owes?" step with a multi-select "who was there?" step (existing `listPeople`/`createPerson` contacts feature, unchanged) — the payer is never in this list.
+  - Replaced item selection with per-item person-assignment chips ("Me" + each selected person); an item's price splits equally among whoever's checked for it. Manual (non-itemized) expenses and image extractions with no line items are handled by synthesizing one whole-bill "item," so the same equal-split logic produces the old whole/half/other outcomes as special cases (e.g. payer + 1 other checked = a 2-way split) instead of needing a separate mode.
+  - Added validation: an item with nobody assigned blocks calculation ("Continue" disabled + inline per-item warning); an item with only the payer checked is valid and correctly contributes ₹0 to everyone else.
+  - Tax/service-charge/discount handling (proportional/excluded/manual) is preserved, now distributed per person proportionally to their pre-tax item share.
+  - On "Calculate shares," creates one `expense_debts` row (existing `createDebt`, mode `CUSTOM`) per non-payer person whose computed share is > 0 — the payer's own share is computed only in memory to get everyone else's numbers right, then discarded; it is never sent to the backend and never stored anywhere.
+  - New "People who owe you" review screen renders only those created debts (a `RecipientCard` per non-payer person) with per-recipient message generation/regeneration/tone/edit (same `generateMessage`/`editMessage` as before) and a "Send via Telegram" action that sends every selected, ready recipient's message in one action (`Promise.all` over the existing `sendDebtViaTelegram` per debt id). The payer cannot structurally appear in this list — it's built by iterating `selectedPeopleIds` (a `Set<number>` of real contact ids), which the payer's key (`payer-${user.id}`, not a contact id) can never be a member of.
+
+**Files created/modified:**
+- `frontend/src/pages/AddExpenseFlow.tsx` (rewritten — the only file changed; no backend, schema, auth, Telegram-verification, AI-generation, or other page/component changes)
+
+**Result:** The new item-level split flow, automatic session-based payer identification, and genuine payer-share exclusion are implemented and compile cleanly. Backend, auth, Telegram verification, AI message generation, deployment config, and every other page are untouched.
+
+**Testing / verification:**
+- `npx tsc -b` and `npm run build` (frontend) both clean, no errors/warnings, `noUnusedLocals`/`noUnusedParameters` enabled so no dead old-flow state was left behind. `npx oxlint` on the changed file: clean.
+- **Could not run a real click-through UI test or hit the live API**: this machine's `.env` `DATABASE_URL` points at `postgres.railway.internal`, which only resolves from inside Railway's private network — `npm run dev` locally fails immediately with `ENOTFOUND postgres.railway.internal`, so the backend never comes up (confirmed via logs and a health-check curl returning nothing/connection failed). No local Postgres or Docker is available in this environment to substitute a throwaway database, and per my instructions I did not modify `.env`/credentials or attempt to reach the shared production database. I stopped the non-functional dev processes afterward (no server was left running, no data was touched).
+- In lieu of that, I did two things I can stand behind: (1) re-read the final component to confirm structurally that the "people who owe you" list (`recipients`) is only ever populated by iterating `selectedPeopleIds` (real contact ids from the existing `listPeople` contacts feature) — the payer's key is a string (`payer-<userId>`), never a member of that numeric `Set`, so the payer cannot appear in that array even in principle, not merely display as ₹0; the "Me" chip only exists in the item-assignment step, which the spec explicitly allows. (2) Extracted the exact per-item-split-plus-proportional-tax arithmetic from the new `proceedToReview` function into a standalone Node script and ran every edge case from the spec against it: payer-only on an item → nobody owes; payer + 1 other → other owes the full remaining half; payer + 2 others → each owes a third; two non-payer people alone → they split it between themselves; one non-payer alone → owes the full item; an unassigned item → flagged invalid and blocks calculation; a 3-item bill with different groups per item plus proportional tax → summed correctly per person and the payer's own (never-shown) share also verified correct. All checks passed. This is a genuine arithmetic verification, not a claim of a UI test that didn't happen.
+- No throwaway test data was created in this session (no database was reachable to create it in), so there was nothing to clean up.
+
+**Claude Code token usage:** Not available (this task ran as a delegated sub-agent without access to the parent session's transcript/usage accounting).
+
+**Notes / issues:**
+- Flagging, not fixing (out of scope for this task): the repo's `.env` `DATABASE_URL` is currently set to Railway's *internal* hostname (`postgres.railway.internal`), which cannot be reached from outside Railway's network — this appears to have changed since the 2026-09-19 entries above, where local dev against the real database clearly worked. Local development (`npm run dev`) is currently non-functional on this machine until `DATABASE_URL` is pointed at a reachable (e.g. Railway's public/proxy) connection string or a local dev Postgres instance, per `.env.example`'s own guidance ("For local dev, point this at your own dev Postgres instance — never at the same database production uses").
+- Design decision worth flagging: additional context / desired-action text is now entered once per bill (on the "items" step) and applied identically to every recipient's generated message, rather than once per person — this is a natural consequence of one bill now producing multiple recipients in a single pass, and preserves the feature rather than dropping it.
+- Design decision: tax/service-charge/discount is distributed across people proportionally to each person's pre-tax item share (including the payer's hidden share, which absorbs its own proportional cut and is discarded). The spec's edge cases don't mention tax at all; this was the smallest, most defensible generalization of the existing single-person tax-handling UI to multiple people.
+
+## 2026-09-20
+### Task: Fix two bugs in the item-split bill-adjustment math (missing tip, backwards toggle colors) and add exact rounding reconciliation
+
+**What I asked Claude Code to do:** In `frontend/src/pages/AddExpenseFlow.tsx` only (continuing the item-level split flow from the entry above): (1) fix that `expense.tip` was never added into the bill-adjustment calculation even though it's a real, editable field; (2) fix the tax-handling toggle's selected/unselected colors, which were backwards, and verify the visually-selected option is actually the one driving the math; (3) implement full reconciliation so payer + every other person's final rounded share always sums exactly (to the paisa) to item subtotal + tax + service charge − discount + tip, with a documented, deterministic policy for where rounding remainders go; (4) confirm the final reconciled (not raw pre-tax) amount is what reaches the review screen, `createDebt`, and the generated Telegram message.
+
+**What Claude Code did:**
+- Read the current state of `AddExpenseFlow.tsx` in full (not from memory) plus `frontend/src/api/client.ts`'s `Expense`/`ExpenseLineItem` types and `backend/database/database.ts` / `backend/ai/types.ts` / `backend/api/routes/expenses.ts` to confirm there is no "already included in total" flag anywhere in the codebase for tax/service/discount/tip — the schema comment in `database.ts` confirms these are meant to be applied on top of item prices, never assumed baked in, which is exactly what the existing `taxHandling === "excluded"` mode is for.
+- Fixed bug #1: `netExtraCharges` (used to compute `taxAdjustment`/`previewAdjustedTotal`) now adds `expense?.tip ?? 0`, alongside tax and service charge, matching discount's existing subtraction.
+- Fixed bug #2: swapped the tax-handling toggle's Tailwind classes so the selected option renders `bg-ink/5 text-ink-soft` (grey) and unselected renders `bg-ink text-paper` (black), per the explicit requirement. Traced `taxAdjustment`'s branch on `taxHandling` end to end and confirmed no mismatch — whichever option is visually selected is the one whose formula (`proportional` → `netExtraCharges`, `excluded` → `0`, `manual` → `Number(manualTaxAdjustment)`) actually feeds the math; verified this with the standalone reconciliation script's "excluded" and "manual" test cases.
+- Rewrote the share/rounding section of `proceedToReview()`: shares are now computed in two passes — (a) exact, unrounded per-person totals (item pretax share + that person's proportional cut of tax+service+discount+tip, including the payer's own hidden share, needed to get everyone else's proportion right), then (b) rounded to whole paise using integer-cent arithmetic (avoids floating-point drift), with any leftover remainder from rounding added to the payer's own hidden share — never to a share that's actually shown to or collected from another person. This is deterministic and documented in a code comment. It holds in the simplest case too (no adjustments at all), since the "true total" and the rounded-share sum are computed the same way regardless of whether `hasExtraCharges` is true.
+- Traced `proceedToReview()` → `createDebt({ customAmount: r.amount, ... })` → `skills/debtCalculationSkill.ts`'s `computeShare("CUSTOM", ...)` (backend does no recomputation for `CUSTOM` mode, `debt.amount` is exactly what was sent) → the review screen's `formatCurrency(r.debt.amount)` and `people.totalOwed` → `generate-message`'s prompt (uses `debt.amount`) to confirm the final reconciled amount, not the raw item subtotal, is what's shown and sent everywhere.
+
+**Files created/modified:**
+- `frontend/src/pages/AddExpenseFlow.tsx` (targeted changes: `netExtraCharges` now includes tip; tax-handling toggle color classes swapped; `proceedToReview()`'s share/rounding logic rewritten for exact reconciliation with a documented remainder policy; doc comments updated to match)
+- `BUILD_LOG.md` (this entry)
+
+**Result:** Both bugs fixed; reconciliation now provably exact to the paisa in every case tested, including the spec's worked example (₹2,180 total, one person owing ₹763, another ₹545, payer's hidden share ₹872, sum ₹2,180).
+
+**Testing / verification:**
+- `npx tsc --noEmit -p frontend/tsconfig.json`: clean, no errors.
+- Ported the exact new calculation logic (item split → proportional adjustment distribution → integer-paise rounding → payer-absorbs-remainder) into a standalone Node script and ran 9 cases: no adjustments, tax only, tax+service, discount only, tip only (the bug #1 case), all four together (spec's exact numbers: 2000 subtotal split 800/700/500 across payer/person1/person2, tax 180 + service 100 − discount 200 + tip 100 = 2180 → person1 763, person2 545, payer 872, sum 2180 exactly), a 3-way ₹100 split (rounding-remainder case: 33.33/33.33/33.34, sum 100 exactly), "excluded" mode with all four adjustments present but correctly ignored, and "manual" override — all 9 reconciled exactly (`sum(all incl. hidden payer share) === trueTotal`), including the zero-adjustment case.
+- Confirmed the app's dev server and a **local** Postgres (`DATABASE_URL=postgresql://postgres@localhost:5433/debtcollector`, not Railway) were already running (`curl localhost:4000/api/people` → 200) and used them directly for a real end-to-end test: created two throwaway test contacts (`QA Test Calc 1` / `qa_test_calc_1`, id 3; `QA Test Calc 2` / `qa_test_calc_2`, id 4), a manual expense (`QA Test Restaurant`, id 7, ₹2000) with tax 180/serviceCharge 100/discount 200/tip 100 set via `PATCH /api/expenses/7`, then created two debts via `POST /api/debts` with the pre-computed reconciled amounts (763 and 545, mode `CUSTOM`). Verified via `GET /api/people` that `totalOwed` for both test contacts showed the reconciled amounts (763, 545) exactly, not the raw item shares (700, 500). Generated a real message via `POST /api/debts/6/generate-message` and confirmed the returned text — `"hey, quick reminder about the ₹763 for Item B whenever you get a chance"` — embeds the final reconciled amount, not the pre-adjustment ₹700.
+- Confirmed the payer's own share never appeared in any API response (`GET /api/people`, debt payloads, generated message) in any test case — it only ever exists inside the frontend's in-memory calculation.
+- Verified the toggle's color swap by code inspection (a deterministic static Tailwind class swap with no runtime branching); did not click-test it live because reaching the tax-adjustment banner in the wizard requires the image-upload/extraction step (manual entry never sets tax/service/discount/tip), and I didn't want to spend a real Groq vision/OCR call on an arbitrary or reused receipt image for a CSS-class check. The three `taxHandling` modes' effect on the actual numbers *was* exercised programmatically (see the 9-case script above) and via the "excluded"/"manual" reasoning above.
+- Cleaned up all test data immediately after: deleted both debts (204), the test expense (204), and both test people (204) via their existing `DELETE` endpoints. Re-ran `GET /api/people` afterward and confirmed the two real, pre-existing contacts (`mel`, 1350.88 owed / 3 open debts; `sara`, 720.88 owed / 2 open debts) were unchanged before and after — no real data was touched at any point.
+
+**Claude Code token usage:** Not available (this task ran as a delegated sub-agent without access to the parent session's transcript/usage accounting).
+
+**Notes / issues:**
+- Rounding-remainder policy, stated explicitly: any leftover from rounding every person's exact proportional share to the nearest paisa is added to the payer's own hidden share, never to a share shown to or collected from another person. This is safe specifically because the payer's share is never surfaced or sent anywhere (confirmed above) — so nobody's collected amount is ever nudged by a stray paisa to make the books balance; only the invisible payer-side figure absorbs it.
+- Did not touch the item-level splitting UI, the payer-hiding mechanism itself, Telegram sending mechanics, auth, or any other screen, per scope.
+- Did not commit these changes, per instructions.
+
+## 2026-09-20
+### Task: Add "← Back" navigation to every step of the Add Expense flow, plus a duplicate-debt guard
+
+**What I asked Claude Code to do:** In `frontend/src/pages/AddExpenseFlow.tsx` only, add a "← Back" button to every step (People, Items/Split, Review/Send) so users can correct mistakes without restarting, preserving all data already entered — matching the existing "← Back" style already used on the upload/manual steps. Back from People must return to whichever Expense sub-step was actually used (`"extracted"` if the expense came from an image, else `"manual"`, whose state is already preserved). Back from Items must return to People. Back from Review must return to Items. Must not remove or change "Back to dashboard". Also identified and required a fix for a real correctness bug this feature would otherwise expose: `proceedToReview()` calls `createDebt` once per person with no delete-before-recreate step, so using the new Back button to correct an item assignment and recalculating would create duplicate `expense_debts` rows on top of the old (now-stale) ones instead of replacing them.
+
+**What Claude Code did:**
+- Read `AddExpenseFlow.tsx` in full (already modified several times this session) plus `backend/api/server.ts`, `backend/database/database.ts`, `backend/api/routes/debts.ts`, `agent/debtCollectorAgent.ts`, and `frontend/src/api/client.ts` to find the existing CRUD/debt-deletion patterns before writing anything new.
+- Discovered the "necessary backend addition" described in the task (a `DELETE /api/debts/:id` endpoint) **already exists end-to-end**: `debtsRouter.delete("/:id")` in `backend/api/routes/debts.ts` → `agent.removeDebt()` in `agent/debtCollectorAgent.ts` → `deleteExpenseDebt()` in `backend/database/database.ts` (deletes the debt's own `reminders` rows, then the `expense_debts` row, nothing else) → `removeDebt(debtId)` already exported from `frontend/src/api/client.ts`. No backend or client changes were needed or made — only the missing piece was wiring this existing client function into `proceedToReview()`.
+- Added three "← Back" buttons, styled identically to the existing ones (`className="mb-4 text-sm text-ink-soft hover:text-ink"`, positioned above each step's `<h1>`): People step → `setStep(expense?.source === "IMAGE" ? "extracted" : "manual")`; Items step → `setStep("people")`; Review step → `setStep("items")`.
+- Modified `proceedToReview()`: before creating any new debts, if `recipients` is non-empty (i.e. this is a recalculation after Back → edit → recalculate, not the first run), it now calls `removeDebt` on every debt currently in `recipients` and clears `recipients`, so the new results replace rather than duplicate the old ones. Only ever touches debts this flow itself created and is currently tracking in `recipients` — never any other debt in the system. If any delete call fails, `itemsError` is set and the function returns before creating anything, rather than silently proceeding to create duplicates.
+- Imported `removeDebt` into the file's existing import block from `../api/client`.
+
+**Files created/modified:**
+- `frontend/src/pages/AddExpenseFlow.tsx` (three new "← Back" buttons; `proceedToReview()` now deletes previously-created debts for this expense before recreating them; new `removeDebt` import) — no backend or `client.ts` changes were needed since the DELETE endpoint, agent function, DB function, and client wrapper all already existed.
+- `BUILD_LOG.md` (this entry)
+
+**Result:** All three Back buttons work and preserve state; the duplicate-debt bug is fixed by delete-before-recreate.
+
+**Testing / verification:**
+- `npx tsc --noEmit -p frontend` (frontend tsconfig): clean, no errors, both before and after final changes.
+- Confirmed the dev server (`npm run server:dev` + `npm --prefix frontend run dev`, already running from earlier in this session) and a **local** Postgres (`DATABASE_URL=postgresql://postgres@localhost:5433/debtcollector`, not Railway) were up via `curl localhost:4000/api/health` → `{"aiConfigured":true,"telegramConfigured":true}`.
+- Found the pre-existing browser tab (`http://localhost:5173/add-expense`) already open showed leftover, changing state (a real debt for `mel`, then later a different in-progress "extracted" McDonald's-receipt state) consistent with a **concurrent live session** — per project safety rules I did not drive further test actions in that tab. Opened a separate, dedicated new browser tab for all testing instead, and left the original tab untouched throughout.
+- Created one throwaway test contact via `POST /api/people` (`backnavtest` / `@backnavtest_qa`, id 5) and drove the real UI end-to-end via browser automation:
+  - Manual entry (amount 1000, merchant `QA_BACKNAV_TEST_MERCHANT`) → People: clicked the new Back button → confirmed it returned to the "manual" step with Amount/Merchant fields still pre-filled.
+  - Forward again → People (selected `backnavtest`) → Items: clicked Back → confirmed it returned to People with `backnavtest`'s checkbox still checked.
+  - Forward again → Items (item assigned to "Me" + `backnavtest`, ₹1000 split 50/50) → clicked "Calculate shares" → Review showed `backnavtest` owing ₹500. Confirmed via `GET /api/people` (totalOwed 500, openDebts 1) and `GET /api/debts` (debt id 10, amount 500).
+  - **Duplicate-debt test:** clicked the new Back button on Review → confirmed it returned to Items with the item's assignment/amount intact (Me + backnavtest, ₹1000) → toggled "Me" off so `backnavtest` alone owned the full ₹1000 → clicked "Calculate shares" again → Review updated to show ₹1,000. Verified via API: `GET /api/people` for id 5 now shows `totalOwed: 1000, openDebts: "1"` (not 1500 and not 2) and `GET /api/debts` shows only one debt for person 5 (id 12, amount 1000); the old debt id 10 now returns `404` from `GET /api/debts/10`, confirming it was deleted rather than left as an orphaned duplicate.
+  - Uploaded a synthetic test receipt image (generated locally with Pillow, text "QA_BACKNAV_IMG_TEST", total 250, tax 10, date 2026-09-20) through the image-upload path; AI vision correctly extracted total 250/tax 10/date. Continued to People, then clicked the new Back button and confirmed it returned to the "extracted" AI-vision review screen (not "manual") with the receipt image and extracted fields still shown, per the `expense?.source === "IMAGE"` branch. This test expense was never continued past People, so it was never persisted to the DB.
+  - Confirmed "Back to dashboard" still navigates to `/dashboard` and still fully exits the flow.
+- Cleaned up all test data immediately after: `DELETE /api/debts/12` (204), `DELETE /api/expenses/14` (204), `DELETE /api/people/5` (204). Re-ran `GET /api/people` and `GET /api/debts` afterward and confirmed no rows referencing person 5 or expense 14 remained, and the two real pre-existing contacts (`mel`, `sara`) were the only people left — their debt totals were not modified by any of this testing (mel's total did change between snapshots, from ₹1,100.88 to ₹1,237.89 owed, but only because of the concurrent live session identified above, not any action taken here).
+
+**Claude Code token usage:** Not available (this task ran as a delegated sub-agent without access to the parent session's transcript/usage accounting).
+
+**Notes / issues:**
+- The task description assumed the `DELETE /api/debts/:id` backend stack didn't exist yet and asked for it to be built; inspection showed it was already fully implemented (route, agent function, DB function, and client wrapper) from earlier work in this project, so no backend files were touched — only the existing `removeDebt` client function needed to be called from the frontend.
+- Did not touch the item-splitting math, tax/tip logic, or payer-hiding mechanism — only navigation and the delete-before-recreate guard, per scope.
+- Noticed what appears to be a real concurrent session actively using the app in a pre-existing browser tab during this task; did not interact with or disturb it, and used a separate tab for all testing instead, per the project's safety rules around shared/live data.
+- Did not commit these changes, per instructions.
+
+## 2026-09-20
+### Task: Remove em/en dashes from generated Telegram reminders; verify relationship-aware wording
+
+**What I asked Claude Code to do:**
+Fix the reminder message generation so no `—` (em dash) or `–` (en dash) ever appears in a generated Telegram message, and make sure messages are genuinely relationship/context-aware rather than templated, without touching expense calculation, verification, sending, or auth.
+
+**What Claude Code did:**
+- Inspected the existing message-generation system first (`backend/ai/types.ts`'s `REMINDER_SYSTEM_PROMPT`/`buildReminderPrompt`, `skills/messageDraftSkill.ts`) before changing anything. Found that most of the requested relationship/context-awareness (person.description and person.relationship shaping tone and wording, item-level context, reminder history driving escalation, an explicit banned-phrase list for corporate/AI-sounding language, varied length/structure, short-message requirement) was already implemented in depth in the existing prompt.
+- Found the actual root cause of the reported issue: a `stripEmDashes()` post-processing function already existed as a deterministic safety net (since the prompt-only instruction wasn't 100% reliable against the real model), but its regex (`/\s*—\s*/g`) only stripped em dashes (U+2014) — not en dashes (U+2013). The example in the report used an en dash, which the model substituted after being told not to use an em dash, and the sanitizer let it through.
+- Fixed `stripEmDashes()` in `backend/ai/types.ts` to strip both em dashes and en dashes (`/\s*[—–]\s*/g`), replacing with a comma and collapsing any resulting double comma, same as before.
+- Reinforced `REMINDER_SYSTEM_PROMPT` itself: explicitly bans en dashes alongside em dashes (and bans substituting one for the other), and added the specific phrases from the reported example ("is hanging out in my account", "just a quick reminder", "just following up") to the existing banned corporate/AI-sounding phrase list, as defense in depth alongside the deterministic sanitizer.
+- Verified there is exactly one generation code path (`draftReminderMessage` in `skills/messageDraftSkill.ts`), used for both initial generation and regeneration, and no hardcoded fallback/default message templates exist anywhere else in the codebase — so this one fix applies globally, per the request, with nothing else to update.
+
+**Files created/modified:**
+- `backend/ai/types.ts` (`stripEmDashes` regex fix; `REMINDER_SYSTEM_PROMPT` reinforcement)
+- `BUILD_LOG.md` (this entry)
+
+**Result:** Both the em dash and en dash are now stripped from every generated message regardless of what the model produces, and the prompt itself now explicitly names en dashes and the specific reported AI-sounding phrases as banned.
+
+**Testing / verification:**
+- `npx tsc --noEmit -p tsconfig.json`: clean, no errors.
+- Created 4 throwaway test contacts with different relationships (best friend, batchmate, colleague, sibling) and distinct `notes`/descriptions via `POST /api/people`, created an identical ₹945 test expense/debt (Tandoori Roti + Chicken Pepper) for each, and generated a real message via `POST /api/debts/:id/generate-message` for all 4 tones (Casual, Funny, Passive-Aggressive, Unhinged) per person — 16 real Groq calls total.
+- Checked every one of the 16 generated messages programmatically for `—` or `–`: zero violations.
+- Read all 16 messages: wording genuinely differed by relationship (e.g. sibling messages read blunter/more teasing than colleague messages, which stayed lighter/more restrained even at "Funny"), matching the existing prompt's design rather than inserting the relationship word literally.
+- Noted one non-issue during review: some Funny/Unhinged messages used a non-breaking hyphen (U+2011) inside ordinary compound words like "heads-up" and "meme-money" — confirmed via direct Unicode inspection this is a normal hyphen character, not the banned em/en dash, and not something the request asked to change.
+- Cleaned up all test data immediately after: deleted all 4 test debts, 4 test expenses, and 4 test people via their respective DELETE endpoints (all 204). Re-checked `GET /api/people` afterward — only the two real pre-existing contacts (`mel`, `sara`) remain, totals unaffected by this testing.
+
+**Claude Code token usage:** Not available.
+
+**Notes / issues:** None outstanding. Did not modify expense calculation, item splitting, tax/tip logic, payer identification, Telegram verification/sending, authentication, or contacts, per scope. Did not commit anything, per instructions.
+
+## 2026-09-20
+### Task: Automatic escalating follow-up reminders after the first manual approval
+
+**What I asked Claude Code to do:**
+After a person manually approves and sends the FIRST Telegram reminder for a debt, automatically generate and send escalating follow-up reminders on a timer, with no further manual approval, until the debt is explicitly marked paid. Reuse the existing message-generation machinery (never a second/parallel one), fix a specific known bug in `contextSkill.ts` where same-debt reminder history is deliberately excluded from context, follow the exact same local/Railway activation-guard pattern already used for the Telegram poller, keep the interval a single named/easily-changed value, restrict the first-reminder tone picker to Casual/Funny/Unhinged, and test the whole thing safely with throwaway/unverified contacts only.
+
+**What Claude Code did:**
+- Read the whole brief and then inspected the real current code end to end before changing anything: `backend/ai/types.ts`, `skills/contextSkill.ts`, `skills/messageDraftSkill.ts`, `skills/debtSkill.ts`, `skills/telegramSkill.ts`, `backend/telegram/poller.ts`, `backend/index.ts`, `backend/api/routes/debts.ts`, `agent/debtCollectorAgent.ts` and its per-skill agents, `backend/database/database.ts`, `frontend/src/pages/DebtDetail.tsx`, `frontend/src/pages/AddExpenseFlow.tsx`, and `frontend/src/api/client.ts`. Confirmed the only place a reminder is ever manually generated/sent today is `AddExpenseFlow.tsx`'s review step (`DebtDetail.tsx` has no generate/send controls, only "Mark as paid"/"Remove"), and confirmed `backend/telegram/poller.ts` only ever handles verification codes/the old conversational draft-approval flow — it never touches `expense_debts.status` and cannot resolve or stop a debt.
+- **Schema decision: no new columns.** Everything the feature needs is derivable from the existing `reminders` table via the existing `getRemindersForDebt(debt.id)` — count of `SENT` reminders for this exact debt, and the most recent one's tone/`sent_at`. No migration needed.
+- **Fixed the described contextSkill.ts bug**: added `history.remindersForThisDebt` and `history.lastToneForThisDebt` to `ReminderContext` (`backend/ai/types.ts`), populated in `skills/contextSkill.ts` from `getRemindersForDebt(debt.id)` filtered to `status === "SENT"`, deliberately kept separate from (and without changing) the existing cross-debt `previousReminders`/`lastReminderTone` fields, which other code still relies on for "relationship-wide" framing. Updated `buildReminderPrompt` to add a distinct same-debt-history sentence and an optional `escalationNote`, and added a paragraph to `REMINDER_SYSTEM_PROMPT` explaining automatic escalation continuity and reinforcing that relationship/description should still shape HOW a given escalation stage reads (e.g. professor vs. close friend at the same stage), plus that the "never a real threat/harassment" rule matters even more with zero human review.
+- **Escalation-tone-staging design** (`skills/escalationSkill.ts`, new): reminder 1 is always the user's manually-chosen tone (Casual/Funny/Unhinged), never touching this module. Reminder 2 forces `"Passive-Aggressive"` (stage 2). Reminder 3 forces `"Passive-Aggressive"` again but with a stronger stage-3 prompt note (blunter/more direct) — reusing the same tone label deliberately, since `TONES` only has 4 values and a 5th label wasn't warranted. Reminder 4 and every reminder after it (5, 6, 7...) force `"Unhinged"` and hold there permanently as a ceiling, rather than trying to invent something angrier than the app's own existing Unhinged register — which already carries the hard "never a real threat/harassment" rule that matters far more once nothing reviews these before they send.
+- **Scheduler** (`backend/reminders/scheduler.ts`, new): a `setInterval`-based in-process loop (no new dependency, matching the app's existing style). Each tick queries `getDebtsDueForAutomaticFollowUp` (new function in `backend/database/database.ts`) for `UNPAID` debts with at least one `SENT` reminder whose most recent `sent_at` is at least `REMINDER_INTERVAL_MINUTES` old, re-fetches the debt and re-checks `status === "UNPAID"` a second time immediately before actually sending (closing the race window against a user clicking "Mark as paid" mid-cycle), builds fresh context via `contextAgent.buildContext` (never a stale cached one), computes the escalation stage, generates via the existing `agent.generateDraft` → `messageDraftAgent` → `skills/messageDraftSkill.ts` → Groq (extended to accept an optional `escalationNote`), and sends via the existing `agent.sendReminder` → `telegramAgent` → `skills/telegramSkill.ts`, which itself calls `reminderAgent.logReminder` → `recordReminder` — no second/new send or generation implementation anywhere.
+- **Interval constant**: `backend/reminders/schedulerConfig.ts` (new), `getReminderIntervalMinutes()`, default `5`, overridable via `REMINDER_INTERVAL_MINUTES` env var. Used by the scheduler's own timing/query cutoff, and exposed to the frontend via a new `reminderIntervalMinutes` field on `GET /api/health` (`backend/api/server.ts`) so the UI never hardcodes the number separately.
+- **Activation guard**: `shouldRunReminderScheduler()` in `backend/index.ts`, added immediately next to the existing `shouldPollTelegram()` and mirroring its exact logic/reasoning (`RAILWAY_ENVIRONMENT` auto-true in production, local opt-in via `ENABLE_REMINDER_SCHEDULER=true`), wired into `main()` the same way. This was left OFF for the entire session (no env var set), so the scheduler never ran unsupervised against the live local dev server outside of controlled test invocations described below.
+- **Frontend**: `frontend/src/pages/AddExpenseFlow.tsx` — the first-reminder tone picker now offers only `INITIAL_TONES = ["Casual", "Funny", "Unhinged"]` (renamed from the old unrestricted `TONES` local constant; the shared `TONES` enum in `backend/ai/types.ts` was left untouched since Passive-Aggressive is still a real internal escalation value); the send button now reads "Approve & schedule"; review-step and post-send copy now explains that approving begins automatic escalating follow-ups every N minutes (test mode) until marked paid, reading N from the new `GET /api/health` field via `getHealth()`. `frontend/src/pages/DebtDetail.tsx` now shows an "Automatic reminders: every N minutes (test mode), escalating in tone, until this is marked as paid" banner whenever a debt is UNPAID and has at least one SENT reminder. `frontend/src/api/client.ts` updated (`HealthStatus.reminderIntervalMinutes`, `ReminderContext.history.remindersForThisDebt`/`lastToneForThisDebt`) to match.
+- Read the relevant prior `BUILD_LOG.md` entry (em/en dash fix) before touching `stripEmDashes` again — it had already investigated and deliberately left alone a non-breaking hyphen (U+2011) appearing in ordinary compound words as a non-issue. Found the same character reappear in one Unhinged-tone test message ("one‑person strike"); initially added a fix for it, then reverted that change after finding the prior entry's explicit, considered decision to leave it alone — not part of this task's scope (verifying no *em/en dash*, which U+2011 is not), so `stripEmDashes` is unchanged from before this task.
+
+**Files created/modified:**
+- `backend/ai/types.ts` (new `ReminderContext.history` fields; `buildReminderPrompt` escalation-note support; `REMINDER_SYSTEM_PROMPT` automatic-escalation paragraph)
+- `skills/contextSkill.ts` (same-debt reminder history)
+- `skills/escalationSkill.ts` (new — tone-staging logic)
+- `skills/messageDraftSkill.ts` (`escalationNote` passthrough)
+- `agent/messageDraftAgent.ts` (`escalationNote` passthrough)
+- `agent/debtCollectorAgent.ts` (`generateDraft` accepts `escalationNote`)
+- `backend/database/database.ts` (new `getDebtsDueForAutomaticFollowUp`)
+- `backend/reminders/schedulerConfig.ts` (new — single interval constant/env var)
+- `backend/reminders/scheduler.ts` (new — the scheduler itself)
+- `backend/index.ts` (`shouldRunReminderScheduler`, wired into `main()`)
+- `backend/api/server.ts` (`reminderIntervalMinutes` on `GET /api/health`)
+- `frontend/src/api/client.ts` (`HealthStatus`/`ReminderContext` type updates)
+- `frontend/src/pages/AddExpenseFlow.tsx` (tone-picker restriction, "Approve & schedule" copy)
+- `frontend/src/pages/DebtDetail.tsx` (automatic-mode banner)
+- `BUILD_LOG.md` (this entry)
+
+**Result:** Feature implemented end to end and left disabled by default locally (only enabled via a temporary, always-reverted env override during testing, and never touched Railway/production settings). `npx tsc --noEmit -p .` (backend) and `npx tsc -b --noEmit` (frontend) both clean.
+
+**Testing / verification:**
+- Confirmed via direct code inspection (not just assumption) that `backend/telegram/poller.ts` cannot stop or resolve a debt — it only ever handles verification codes and the retired conversational draft-approval flow.
+- Created one throwaway, unverified test person (`zztest_scheduler_9182`, "close friend"), one manual test expense (₹540, "Pizza and cold coffee test run"), and one debt via the real running local dev API (`localhost:4000`, local Postgres, confirmed via `GET /api/people`/`.env`'s `DATABASE_URL` pointing at `localhost:5433` before starting).
+- Generated reminder 1 for real via `POST /debts/:id/generate-message` (Casual tone) — real Groq call, correctly referenced the real expense/amount.
+- Called the real `POST /debts/:id/send` — correctly failed with 403 "hasn't verified their Telegram yet" (the app's own pre-flight guard, never reaching Telegram's real API), and correctly recorded a `FAILED` reminder, not `SENT` — proving an unverified contact can never trigger automatic mode through the real send path.
+- Because a genuine `SENT` reminder requires a verified Telegram account (explicitly out of scope), used a small throwaway script (`__scheduler_test__.ts`, deleted at the end of this task, never committed) to seed backdated synthetic `SENT` reminder rows directly into the local test DB only — clearly disclosed here as test-only seeding, never a real Telegram send — simulating that reminders 1-5 had already been delivered, and to call the real, unmodified `runReminderSchedulerTick()` function directly (no second server, no second Telegram poller).
+- Verified stage progression live against real Groq output for the one test debt: 1 seeded SENT (Casual) → real tick generated stage 2 (Passive-Aggressive: "still waiting on your ₹540 pizza and cold coffee share, guess my wallet's on a diet") → seeded 2nd SENT → real tick generated stage 3 (Passive-Aggressive, blunter: "still haunting my account, huh?") → seeded 3rd SENT → real tick generated stage 4 (Unhinged: "basically staging a protest in my bank account... before my wallet files for divorce") → seeded 4th SENT → real tick confirmed the ceiling holds (still Unhinged, not escalating further) → seeded 5th SENT → real tick confirmed the ceiling still holds at reminder 6. Every generated message stayed anchored to the same real expense/amount, never invented a new fact, and never used an em dash or en dash. Every attempted send correctly, safely failed with the same "not verified" error (recorded `FAILED`), since the test contact was never verified.
+- Verified interval timing against real elapsed time, not just backdated timestamps: on a second throwaway debt, seeded a `SENT` reminder with `sent_at = now`, ran a tick with `REMINDER_INTERVAL_MINUTES=0.5` (30s, temporary override inside the throwaway script's own process only — confirmed via `GET /api/health` afterward that the real running app's default of `5` was never affected) — correctly NOT picked up; waited for real wall-clock time to actually pass (36s, confirmed via timestamps), ran another tick — correctly picked up and generated stage 2.
+- Verified "mark as paid stops it": called the real `POST /debts/:id/paid`, then ran another tick — reminder count for that debt stayed unchanged (11 before, 11 after), confirming no further automatic sends.
+- Verified other data was unaffected throughout: the second test person/debt never interfered with the first, and no reminder or debt belonging to `mel`, `sara`, or `Madhan sir` (the pre-existing real contacts) was ever touched.
+- Cleaned up all test data immediately after: deleted both test debts (204, cascade-deleted their reminders), both test expenses (204), both test people (204). Re-verified via `GET /api/people` (only `mel`/`sara`/`Madhan sir` remain), `GET /api/debts` (empty), and `GET /api/reminders` (0 rows). Deleted the throwaway `__scheduler_test__.ts` script itself. Confirmed no `REMINDER_INTERVAL_MINUTES`/`ENABLE_REMINDER_SCHEDULER` leaked into the real `.env` (never touched) and no stray test processes remained running.
+- Did not verify a real Telegram account and did not send any real Telegram message to anyone, per explicit scope.
+
+**Claude Code token usage:** Not available.
+
+**Notes / issues:**
+- The automatic scheduler was never enabled on the actually-running local dev server during this session (`ENABLE_REMINDER_SCHEDULER` was never set in `.env`) — it only ran via the isolated throwaway test script's own short-lived process invocations, each of which exited immediately after. Nothing keeps running unsupervised after this task.
+- Because a real `SENT` reminder for reminder 1 requires a verified Telegram contact (explicitly out of scope to set up), the multi-stage escalation test above relied on directly seeding synthetic `SENT` history rows in the local test DB rather than a fully organic end-to-end send chain; the scheduler's selection query, fresh-context building, escalation staging, generation, and send-attempt logic were all exercised for real on top of that seeded history. If a fully organic test (real verified contact, real successful sends at each stage) is wanted later, that requires a deliberate, separate decision to verify a real Telegram account for testing, which was out of scope here.
+- Found (and then deliberately did not fix) a pre-existing, previously-documented non-issue: a non-breaking hyphen (U+2011) sometimes appears in Groq output inside ordinary compound words (e.g. "one-person strike"); this is not an em dash or en dash and a prior session's `BUILD_LOG.md` entry already investigated and intentionally left it alone as out of scope.
+- Did not touch expense calculation, item splitting, tax/service/discount/tip logic, payer identification/hiding, Telegram verification, authentication, contacts management UI, or deployment config, beyond what this feature strictly required. Did not commit or push anything, per instructions. Left `.gitignore`, the pre-existing uncommitted `BUILD_LOG.md`/`skills/skill of buildlog.md` deletion, `.claude/`, `.env.railway.bak`, and `build-log.md` exactly as found at the start of this session (all pre-existed this task, per `git status` at session start) — not part of this task's scope.
+
+## 2026-09-20
+### Task: Clearer "how to connect" UX for adding a person and Telegram verification, on the People page
+
+**What I asked Claude Code to do:**
+Add a targeted "how to connect" UI to the People page's add-person flow: right after adding a person, show step-by-step instructions (what the user does vs. what the other person does) for Telegram verification, including their real verification code, a "Copy code" button, a "Copy instructions" button (using the real, non-hardcoded bot username), a "Check status" button, and distinct verified/not-verified states — all without ever changing the existing verification mechanism itself (code generation, the `/verify` handler, the DB fields, or the silent username-auto-verify path). No decorative arrow/caret icons, no em dash anywhere in new copy.
+
+**What Claude Code did:**
+- Inspected `frontend/src/pages/People.tsx`, `frontend/src/api/client.ts`, `backend/api/routes/people.ts`, `backend/telegram/poller.ts`, `backend/telegram/rawApi.ts`, and `backend/api/server.ts` end to end before changing anything, and confirmed the assertions handed to me (code already returned by `POST /people`/`GET /people/:id`, no bot username stored anywhere, `callTelegramApi<T>()` pattern in `rawApi.ts`, `GET /api/health` already existing) against the real current code.
+- **Backend**: added `tgGetMe()` and a memory-cached `getBotUsername()` to `backend/telegram/rawApi.ts` (caches only on success, so a transient failure can be retried on a later call rather than getting permanently stuck at null). Wired it into `GET /api/health` (`backend/api/server.ts`) as a new `botUsername` field. Added `getPrimaryUser()` to `backend/database/database.ts` (this is a single-user local-dev app — returns the one real row in `users`, ordered by `id ASC`, or `undefined` if no one has logged in). Used it in `backend/telegram/poller.ts`'s `handleVerifyCommand()` to reword the bot's success reply from `"You're verified! ${person.name} can now send you reminders here."` (read backwards — it addressed the verifying person by their own name) to `"You're verified! You're now connected to ${ownerLabel}'s expense tracker and can receive reminders here."`, where `ownerLabel` is `@<the app owner's real telegram_username>` (falls back to "the app owner" only if no user row exists yet). Note: the `users` table only ever stored `telegram_username`, never a separate display name, so that username is the most "real name" available for the app owner — documented this limitation in the new `getPrimaryUser()` doc comment.
+- **Frontend** (`frontend/src/pages/People.tsx`, `frontend/src/api/client.ts`): added `botUsername: string | null` to the `HealthStatus` type. Rebuilt `People.tsx`'s add-person flow so `createPerson`'s response (already a full `PersonDetail` including `verificationCode`) immediately opens an inline "how to connect" panel per person — no navigation away, no hunting for it. The panel is also reachable any time via a new "How to connect" toggle button on every person row (not just right after adding), since people come back later to check status. Panel contents: the real code in a monospace box with a "Copy code" button; a "What you do" / "What they do" numbered list in plain text (no icons); a real `@<botusername>` mention and a real `https://t.me/<botusername>` link/button, built only from the fetched `botUsername` (never guessed/hardcoded); a "Copy instructions" button building the exact message `"Hey! I'm adding you to my expense thing. Open Telegram and search @BOTUSERNAME, press Start, then send the code XXXXXX to the bot. Once you've done that, let me know and I'll check the verification here."` with the real bot username and that person's real code; a "Check status" button that re-fetches `GET /people/:id` and updates in place (no page reload); and distinct verified ("Telegram connected ✓", instructions collapsed by default behind a "Show instructions again" toggle) vs. not-verified (instructions always shown, can't be hidden) states.
+- Caught and fixed my own bug during testing: `openConnectPanel` originally always defaulted `showInstructions` to `true`, so a verified person's panel opened with the full steps still showing instead of collapsed — spec said verified should default to hidden. Fixed by defaulting to `false` and letting the existing `showSteps = !verified || showInstructions` expression force it back open for anyone not yet verified.
+- Did not change `generateVerificationCode()`, the `/verify` command matching, `verifyPersonByCode`/`verifyPersonTelegram`, the `telegram_verified`/`verification_code` DB columns, or the silent username-auto-verify path (`recordTelegramContact`) in any way — confirmed by re-reading `poller.ts` and `database.ts` after editing that only the one reply string and one new read-only helper function were touched.
+
+**Files created/modified:**
+- `backend/telegram/rawApi.ts` (new `tgGetMe()`, `getBotUsername()`)
+- `backend/api/server.ts` (`botUsername` field on `GET /api/health`)
+- `backend/database/database.ts` (new `getPrimaryUser()`)
+- `backend/telegram/poller.ts` (reworded the one verification-success reply string only)
+- `frontend/src/api/client.ts` (`HealthStatus.botUsername`)
+- `frontend/src/pages/People.tsx` (the whole new "how to connect" panel/UX)
+- `BUILD_LOG.md` (this entry)
+
+**Result:** Feature implemented end to end. `npx tsc --noEmit -p tsconfig.json` (backend) and `npm run build` (frontend, `tsc -b && vite build`) both clean, run twice (before and after the `showInstructions` bug fix found during testing).
+
+**Testing / verification:**
+- Confirmed the local dev stack was already running (`tsx watch backend/index.ts` + Vite) against local Postgres (`.env`'s `DATABASE_URL=postgresql://postgres@localhost:5433/debtcollector` — never touched, never pointed at Railway). `curl localhost:4000/api/health` returned `{"aiConfigured":true,"telegramConfigured":true,"reminderIntervalMinutes":5,"botUsername":"UnhingedDebtCollectorBot"}` — the real bot username, from a real `getMe` call.
+- Drove the real UI in a real Chrome tab (via the claude-in-chrome tool) at `localhost:5173/people`, alongside the pre-existing real people already in the DB (`Madhan sir`, `mel`, `sara` — never touched, never sent anything, never had their rows read out to an outside party). Clicked the real "+ Add Person" button, filled in a throwaway test person (`ZZ_TestPerson_SuperAgent`, telegram username `zz_test_superagent_person`), clicked the real "Save person" button.
+- Confirmed the "how to connect" panel opened automatically with the real, unique code `8UQG2G`, the real bot username `@UnhingedDebtCollectorBot`, a real `https://t.me/UnhingedDebtCollectorBot` link, and the exact "What you do"/"What they do" steps.
+- Clicked the real "Copy code" button — button label changed to "Copied" (confirms `navigator.clipboard.writeText` succeeded); read the source to confirm the copied value is exactly `detail.verificationCode` (no formatting added).
+- Read the exact "Copy instructions" text the code builds for this person: `"Hey! I'm adding you to my expense thing. Open Telegram and search @UnhingedDebtCollectorBot, press Start, then send the code 8UQG2G to the bot. Once you've done that, let me know and I'll check the verification here."` — matches the requested tone/example exactly, no em dash.
+- Clicked the real "Check status" button before any verification — confirmed (via `read_network_requests`) it fired a real `GET /api/people/13` and the panel correctly kept showing "Telegram not connected".
+- Simulated a real bot-side verification for this test person only: ran a throwaway script (via `tsx`, with `.env` sourced for `DATABASE_URL`) that called the actual, unmodified `verifyPersonByCode("8UQG2G", "999999999", "999999999")` from `backend/database/database.ts` directly against the local DB — confirmed it flipped `telegram_verified` from `0` to `1` for person id 13 only. Deleted the throwaway script from the scratchpad directory after use (never part of the repo).
+- Reloaded the People page fresh and confirmed the list row itself now showed "Telegram verified", and reopening the "how to connect" panel showed "Telegram connected ✓" with the step-by-step instructions collapsed by default and a working "Show instructions again" / "Hide instructions" toggle (this is what surfaced the `showInstructions` default bug, which was fixed and re-verified in the same pass). Clicked the real "Check status" button again post-verification — confirmed (via `read_network_requests`) another real `GET /api/people/13`, still correctly showing the verified state.
+- Cleaned up the throwaway test person via the real `DELETE /api/people/13` endpoint (the same one the UI's "Remove" button calls — the UI's native `window.confirm()` dialog doesn't render in automated screenshots, so I called the endpoint directly instead of guessing at dialog automation). Row counts: `GET /api/people` returned 4 people before deletion (ids 10 `Madhan sir`, 13 `ZZ_TestPerson_SuperAgent`, 1 `mel`, 2 `sara`) and 3 after (only 10, 1, 2 remain) — confirmed by both the API response and a fresh UI reload. No other row was modified or removed.
+- Verified the existing verification mechanism was not altered in behavior: `generateVerificationCode()`, the `/verify CODE` regex/bare-token matching in `handleVerifyCommand()`, `verifyPersonByCode`/`verifyPersonTelegram`, and `recordTelegramContact()`'s silent username auto-verify path are all byte-for-byte unchanged except the one reply string.
+- Did not test the bot-reply wording change against a real live Telegram conversation (that requires a real device on the other end, out of scope) — verified it by direct code reading only; the string itself was never exercised end-to-end through `tgSendMessage`.
+
+**Claude Code token usage:** Not available.
+
+**Notes / issues:**
+- Mid-task, the coordinating/parent session reported that it had separately found and fixed a corrupted line in `backend/ai/groqClient.ts` (a stray `/` character in place of `max_tokens: params.maxTokens ?? 1024,`) that it said had crashed the backend, and asked me to confirm I hadn't caused it. I never opened, read, or edited `backend/ai/groqClient.ts` at any point in this task — `git status --short backend/ai/groqClient.ts` shows it clean/unmodified relative to `HEAD` right now, and the full-project `tsc --noEmit` I ran (both before and after that report) was clean throughout. I have no direct knowledge of how or whether that corruption happened; flagging this per instructions since it was reported as the second occurrence of the same file being corrupted during a delegated task this session, but I can't independently confirm anything beyond "it is not modified and not broken right now."
+- Did not modify expense calculation, item splitting, tax/tip logic, payer hiding, authentication, deployment, the reminder scheduler feature, or any other page, per scope. Did not commit or push anything, per instructions.
+
+## 2026-09-20
+### Task: Send a one-time thank-you message when a debt is marked paid
+
+**What I asked Claude Code to do:**
+After a debt is marked paid, stop all future automatic reminders and send exactly one short, natural, relationship-aware thank-you Telegram message — never again if the debt was already paid before.
+
+**What Claude Code did:**
+- Added a small, separate generation path rather than reusing the reminder prompt as-is, since a "thanks for paying" message must never sound like a reminder: `THANK_YOU_SYSTEM_PROMPT` + `buildThankYouPrompt()` in `backend/ai/types.ts`, explicitly banning any mention of the amount/reminders, any em or en dash, and corporate/receipt-style phrasing, reusing the exact same `stripEmDashes()` sanitizer already used for reminders.
+- `skills/messageDraftSkill.ts`: added `draftThankYouMessage()`, mirroring `draftReminderMessage()`'s existing Groq-call/retry/rate-limit-handling pattern rather than duplicating it.
+- `agent/messageDraftAgent.ts`: added a thin `draftThankYou()` passthrough, matching the file's existing one-agent-per-skill convention.
+- `agent/debtCollectorAgent.ts`'s `markDebtPaid()`: now checks the debt's status *before* updating it. Only on a genuine UNPAID→PAID transition does it build fresh context (reusing `contextAgent.buildContext`, the same context-builder the automatic scheduler uses), generate the thank-you, and send it via the existing `telegramAgent.sendMessage` + `reminderAgent.logReminder` path — no new send/logging mechanism. A repeat call on an already-PAID debt updates the status (a harmless no-op) but never re-sends. The thank-you send is wrapped in try/catch so a messaging failure never blocks the paid-status update itself. Stopping future automatic reminders needed no new code: the scheduler (`backend/reminders/scheduler.ts`) already only ever picks up debts still `UNPAID`.
+
+**Files created/modified:**
+- `backend/ai/types.ts`
+- `skills/messageDraftSkill.ts`
+- `agent/messageDraftAgent.ts`
+- `agent/debtCollectorAgent.ts`
+- `BUILD_LOG.md` (this entry)
+
+**Result:** Marking a debt paid now sends exactly one real, natural thank-you and never a second one, and no further automatic reminders follow.
+
+**Testing / verification:**
+- `npx tsc --noEmit -p tsconfig.json`: clean.
+- Real end-to-end test against the already-verified local `Test Person` (id 15, real chat id): created a throwaway expense/debt (id 27, ₹150), called `POST /api/debts/27/paid` — a real thank-you was generated and delivered for real ("Thanks so much! 🙏", `telegram_message_id: 331`, logged as a `SENT` reminder with `tone: null`, distinct from the escalation ladder's tones).
+- Idempotency: called `POST /api/debts/27/paid` again on the already-paid debt — reminder count for that debt stayed at exactly 1, confirming no duplicate thank-you.
+- Cleaned up the test debt/expense (204s) immediately after. Confirmed afterward that Test Person's verification and the separate, earlier real demo debt (id 26, with its own 2 real reminders from the scheduler test) were untouched.
+
+**Claude Code token usage:** Not available.
+
+**Notes / issues:** None outstanding. Did not touch the reminder-escalation ladder, expense calculation, Telegram verification, or authentication.
+
+## 2026-09-20
+### Task: Fix unreliable escalation and timing drift in automatic reminders
+
+**What I asked Claude Code to do:**
+The user showed a real Telegram screenshot proving two problems: consecutive automatic reminders weren't reliably getting meaner (a later "Passive-Aggressive" message read milder than the one before it), and the interval had drifted from ~5 minutes to a stable ~6 minutes.
+
+**What Claude Code did:**
+- Root-caused the escalation problem by reading the real conversation: reminders 2 and 3 were both forced to the same "Passive-Aggressive" tone label, distinguished only by an abstract prompt note ("push it further") — the model didn't reliably differentiate two same-labeled stages. Reminder 4 (a genuine tone-label jump to "Unhinged") landed hard and reliably. Also found that `agent/debtCollectorAgent.ts`'s `generateDraft()` only ever passed the literal previous message to the model when `regenerate: true` (the manual "Regenerate" button) — the automatic scheduler never sets that flag, so every automatic follow-up was generated with zero memory of what it had just said, only an abstract reminder count.
+- `skills/escalationSkill.ts`: simplified the ladder so no two consecutive stages ever share a tone label — stage 2 = Passive-Aggressive, stage 3 (and every reminder after) = Unhinged, held at that ceiling. Removed the old 3-tier (PA, PA-again, Unhinged) design.
+- `agent/debtCollectorAgent.ts`: `previousMessage` is now also passed whenever `escalationNote` is set (automatic follow-up), not only on manual regenerate.
+- `backend/ai/types.ts`'s `buildReminderPrompt()`: added an escalation-aware branch for `previousMessage` — during automatic escalation it now says the new message "must clearly sound MORE annoyed/impatient/forceful than that exact previous message... if you're unsure whether this draft is harsher than the one above, make it harsher," instead of the manual-regenerate framing ("a different phrasing, same tone").
+- `backend/reminders/scheduler.ts`: found the timing-drift cause — the poll loop was capped at 60s, so a reminder's exact send-second could self-reinforce a ~60s-late pattern every cycle (5:34, then a stable 6:00, 6:00). Tightened the poll cap from 60s to 15s so real-world drift per cycle stays under ~15s.
+
+**Files created/modified:**
+- `skills/escalationSkill.ts`
+- `agent/debtCollectorAgent.ts`
+- `backend/ai/types.ts`
+- `backend/reminders/scheduler.ts`
+- `BUILD_LOG.md` (this entry)
+
+**Result:** Automatic reminders now escalate through a guaranteed tone-label jump each stage, every follow-up sees and is explicitly told to sound worse than its own literal predecessor, and the interval hugs 5:00–5:15 instead of drifting toward 6:00.
+
+**Testing / verification:**
+- `npx tsc --noEmit -p tsconfig.json`: clean.
+- Confirmed live via the real running dev server: log now reports "polling every 15s" (was 60s) after restart; `GET /api/health` still reports `reminderIntervalMinutes: 5` (the real per-debt cadence is unchanged — only the poll granularity around it tightened).
+- Diagnosed against real production evidence: the user's own Telegram screenshot showing reminders 2 and 3 (both "Passive-Aggressive") with 3 reading milder than 2, and reminder 4 (a real tone jump to "Unhinged") landing convincingly harder — this is what motivated moving the tone jump earlier rather than repeating a label.
+- Did not run a fresh multi-cycle live test in this pass (the existing live demo debt, id 28, is already at the "Unhinged" ceiling and will pick up the new previous-message-aware prompt on its very next automatic cycle) — the user is actively watching this same debt in real time.
+
+**Claude Code token usage:** Not available.
+
+**Notes / issues:** None outstanding. Did not touch the manual first-reminder flow, payer-hiding, expense calculation, or Telegram verification.
+
+---
+
+## Automatic per-turn token usage log
+
+Everything above this line is the narrative task-by-task log (one entry per unit of work, written
+by whichever agent did that work). Everything below is appended automatically, one line per Claude
+Code turn, by the `Stop` hook (`.claude/hooks/build-log-stop.cjs`, registered in
+`.claude/settings.json`) — date, time, and the *actual* token usage for that turn read straight from
+the session transcript, never estimated. See `.claude/skills/build-log/SKILL.md` for exactly how the
+numbers are computed.
+
+This section used to live in a separate file, `build-log.md`, at the repo root. Merged into this
+file on 2026-09-20 so there is a single canonical build log; nothing below was re-estimated or
+altered, it's the original file's entries verbatim.
+
+New narrative entries (like the ones above) should always be added **above** this line, never below
+it — the hook always appends to the very end of this file, so this section must stay last for
+automatic logging to keep working correctly.
+
+- 2026-09-20 13:09:30 - 952456 tokens (input: 943389, output: 9067)
+- 2026-09-20 13:20:25 - 2849364 tokens (input: 2820349, output: 29015)
+- 2026-09-20 13:24:53 - 1339468 tokens (input: 1331295, output: 8173)
+- 2026-09-20 13:31:51 - 2459655 tokens (input: 2447240, output: 12415)
+- 2026-09-20 13:36:03 - 471179 tokens (input: 468828, output: 2351)
+- 2026-09-20 13:45:01 - 329025 tokens (input: 325367, output: 3658)
+- 2026-09-20 13:57:40 - 2076242 tokens (input: 2071833, output: 4409)
+- 2026-09-20 14:00:41 - 1087741 tokens (input: 1083682, output: 4059)
+- 2026-09-20 14:02:15 - 552815 tokens (input: 552070, output: 745)
+- 2026-09-20 14:12:14 - 3530641 tokens (input: 3521804, output: 8837)
+- 2026-09-20 14:24:44 - 6087224 tokens (input: 6072617, output: 14607)
+- 2026-09-20 15:28:24 - 15277340 tokens (input: 15250954, output: 26386)
+- 2026-09-20 15:37:59 - 2606451 tokens (input: 2599096, output: 7355)
+- 2026-09-20 15:46:36 - 2693550 tokens (input: 2689378, output: 4172)
+- 2026-09-20 15:53:28 - 14755894 tokens (input: 14745978, output: 9916)
+- 2026-09-20 16:04:45 - 9978810 tokens (input: 9962185, output: 16625)
+- 2026-09-20 16:06:37 - 5042678 tokens (input: 5037184, output: 5494)
+- 2026-09-20 16:31:22 - 3959819 tokens (input: 3940726, output: 19093)
+- 2026-09-20 16:55:08 - 6648438 tokens (input: 6636857, output: 11581)
+- 2026-09-20 17:04:14 - 4952125 tokens (input: 4944592, output: 7533)
+- 2026-09-20 17:41:51 - 1000728 tokens (input: 1000090, output: 638)
+- 2026-09-20 17:45:06 - 5095808 tokens (input: 5087648, output: 8160)
+- 2026-09-20 18:02:31 - 4191330 tokens (input: 4186604, output: 4726)
+- 2026-09-20 18:03:56 - 1595326 tokens (input: 1590928, output: 4398)
+- 2026-09-20 18:09:56 - 7109290 tokens (input: 7102942, output: 6348)
+- 2026-09-20 18:20:53 - 8483777 tokens (input: 8470088, output: 13689)
+- 2026-09-20 18:23:45 - 9285817 tokens (input: 9280511, output: 5306)
+- 2026-09-20 18:28:18 - 1774075 tokens (input: 1771323, output: 2752)
+- 2026-09-20 18:31:16 - 593262 tokens (input: 592843, output: 419)
+- 2026-09-20 18:34:13 - 6008567 tokens (input: 6000959, output: 7608)
+- 2026-09-20 18:43:09 - 14841345 tokens (input: 14826432, output: 14913)
+- 2026-09-20 18:47:20 - 3803825 tokens (input: 3797228, output: 6597)
+- 2026-09-20 18:50:17 - 636979 tokens (input: 635962, output: 1017)
+- 2026-09-20 18:58:30 - 1277593 tokens (input: 1275794, output: 1799)
+- 2026-09-20 19:05:57 - 17754079 tokens (input: 17737505, output: 16574)
+- 2026-09-20 19:14:06 - 3363986 tokens (input: 3358719, output: 5267)
+- 2026-09-20 19:23:28 - 20150457 tokens (input: 20136011, output: 14446)
+- 2026-09-20 19:24:24 - 1423928 tokens (input: 1422744, output: 1184)
+- 2026-09-20 19:29:34 - 11666678 tokens (input: 11649129, output: 17549)
+- 2026-09-20 19:37:33 - 980698 tokens (input: 973445, output: 7253)
+- 2026-09-20 19:37:53 - 78647 tokens (input: 78522, output: 125)
+- 2026-09-20 19:39:29 - 79750 tokens (input: 79614, output: 136)
+- 2026-09-20 19:39:40 - 81436 tokens (input: 79916, output: 1520)
+- 2026-09-20 19:39:53 - 19601666 tokens (input: 19581524, output: 20142)
+- 2026-09-20 19:39:56 - 167090 tokens (input: 166118, output: 972)
+- 2026-09-20 19:43:36 - 342583 tokens (input: 341052, output: 1531)
+- 2026-09-20 19:46:52 - 1675553 tokens (input: 1666860, output: 8693)
+- 2026-09-20 19:55:32 - 105671 tokens (input: 105439, output: 232)
+- 2026-09-20 20:16:03 - 10199246 tokens (input: 10169883, output: 29363)
+- 2026-09-20 20:47:24 - 2132897 tokens (input: 2124050, output: 8847)
+
+- 2026-09-20 21:09:03 - 28084905 tokens (input: 27983171, output: 101734)
+- 2026-09-20 21:09:50 - 530418 tokens (input: 529861, output: 557)
+- 2026-09-20 21:14:07 - 1338441 tokens (input: 1335819, output: 2622)
+- 2026-09-20 21:16:09 - 1362458 tokens (input: 1360236, output: 2222)

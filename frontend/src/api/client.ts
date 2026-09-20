@@ -55,6 +55,10 @@ export const login = (telegramUsername: string) =>
 export interface HealthStatus {
   aiConfigured: boolean;
   telegramConfigured: boolean;
+  /** Minutes between automatic follow-up reminders once a debt's first reminder has been sent — see backend/reminders/schedulerConfig.ts. */
+  reminderIntervalMinutes: number;
+  /** The bot's real @username (no leading @), fetched from Telegram's getMe and cached server-side. Null if Telegram isn't configured or the lookup failed. */
+  botUsername: string | null;
 }
 
 export const getHealth = () => request<HealthStatus>("/health");
@@ -219,6 +223,9 @@ export interface ReminderContext {
     daysOutstanding: number;
     lastReminderTone: string | null;
     otherOpenDebts: Array<{ amount: number; reason: string; daysOutstanding: number }>;
+    /** How many reminders have already been sent for THIS exact debt (0 = first reminder only). */
+    remindersForThisDebt: number;
+    lastToneForThisDebt: string | null;
   };
 }
 

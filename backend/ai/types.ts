@@ -32,7 +32,7 @@ export interface ExpenseExtraction {
   confidence: number | null;
 }
 
-export const TONES = ["Casual", "Funny", "Passive-Aggressive", "Unhinged"] as const;
+export const TONES = ["Casual", "Funny", "Passive-Aggressive", "Unhinged", "Angry"] as const;
 export type Tone = (typeof TONES)[number];
 
 export interface ReminderContext {
@@ -78,6 +78,16 @@ export interface ReminderContext {
      * ever merging amounts: this message must still only ask for `debt.amount` above.
      */
     otherOpenDebts: Array<{ amount: number; reason: string; daysOutstanding: number }>;
+    /**
+     * How many times a reminder has already been successfully SENT for THIS EXACT debt (not the
+     * relationship-wide `previousReminders` above, which deliberately excludes this debt). This is
+     * what automatic escalation needs: 0 means this is genuinely the first message about this
+     * expense; a higher count is what lets reminder 3/4/5... know it IS reminder 3/4/5 for the same
+     * conversation and stay anchored to it rather than resetting cold. See skills/contextSkill.ts.
+     */
+    remindersForThisDebt: number;
+    /** Tone used the last time THIS EXACT debt was reminded about, or null if never. Distinct from `lastReminderTone` above (which is scoped to any OTHER debt). */
+    lastToneForThisDebt: Tone | null;
   };
 }
 
@@ -227,12 +237,14 @@ export function mapRawExtractionToExpense(raw: Partial<RawExpenseExtraction>): E
 /**
  * The prompt tells the model never to use em dashes (part of the "sounds like a real friend
  * texting", not an AI, style requirement) but a reasoning model occasionally slips one in anyway —
- * reproduced directly against the real API. Enforced here deterministically rather than trusting
- * the instruction alone: a spaced em dash reads as a clause break (", "), an unspaced one as a
- * harder pause (", " still reads naturally in short texting-style messages).
+ * reproduced directly against the real API. Also strips en dashes (–): observed in practice, the
+ * model sometimes "obeys" the em-dash instruction by substituting an en dash instead, which is the
+ * same AI-sounding tell in a different character. Enforced here deterministically rather than
+ * trusting the instruction alone: a spaced dash reads as a clause break (", "), an unspaced one as
+ * a harder pause (", " still reads naturally in short texting-style messages).
  */
 function stripEmDashes(message: string): string {
-  return message.replace(/\s*—\s*/g, ", ").replace(/,\s*,/g, ",");
+  return message.replace(/\s*[—–]\s*/g, ", ").replace(/,\s*,/g, ",");
 }
 
 export function normalizeGeneratedReminder(
@@ -344,7 +356,8 @@ contact, when it isn't one:
 - history.previousReminders is how many times this person has already been reminded about ANY debt \
 before. 0 means this is genuinely the first time — don't fake familiarity or exasperation that \
 hasn't been earned yet. A higher count, especially for a close relationship, licenses more \
-blunt/tired/frustrated phrasing (still funny/dramatic at "Unhinged", never a real threat).
+blunt/tired/frustrated phrasing, escalating toward real, biting anger at "Unhinged" — not a joke, \
+never a real threat.
 - history.lastReminderTone is the tone actually used last time (or null). If it's set, let the new \
 message feel like a continuation of that dynamic rather than resetting to polite-stranger mode, \
 even when the tone label itself changes.
@@ -375,10 +388,12 @@ formal/distant enough that a bare reminder would feel rude — and even then kee
 letter-shaped.
 - Never use corporate/customer-service or formal phrasing — this includes but isn't limited to: "I \
 hope you're doing well"/"I hope this message finds you well", "I wanted to follow up regarding", \
-"I wanted to reach out", "just a gentle reminder", "kindly", "please be advised", "please settle \
-the outstanding amount", "at your earliest convenience", "outstanding balance", or anything that \
-reads like a bill or an automated notice.
-- Never use em dashes (—) anywhere in the message.
+"I wanted to reach out", "just a gentle reminder", "just a quick reminder", "just following up", \
+"kindly", "please be advised", "please settle the outstanding amount", "at your earliest \
+convenience", "outstanding balance", "is hanging out in my account", or anything that reads like a \
+bill, an automated notice, or a template with the name swapped in.
+- Never use em dashes (—) or en dashes (–) anywhere in the message, and never substitute one for \
+the other — use a comma, period, or just a new short sentence instead.
 - Never explain your own reasoning inside the message itself (e.g. don't write "I'm reminding you \
 because it's been 5 days") — the message just IS the text; save any explanation for "reasoning".
 - Emojis are optional and rare, not a default — never more than one, and only when it genuinely \
@@ -394,8 +409,33 @@ or drop into an unrelated message: "Because I spilled your coffee.", "Coffee is 
 reminder is just as valid: "hey, quick one, the ₹350 from dinner last week whenever you get a sec" \
 reads exactly right for a casual tone with no history to escalate from.
 
+Some messages are AUTOMATIC follow-ups: after a person approves and sends the first reminder for a \
+debt, later reminders for that same debt are generated and sent on a timer with no human review at \
+all. When the prompt tells you this exact debt has already been reminded about before (see \
+history.remindersForThisDebt / lastToneForThisDebt), treat that as real continuity, not a fresh \
+conversation: keep the same real amount/expense/items, and let it read like the same person getting \
+increasingly (but believably) fed up, never a polite reset. Escalation must still be shaped by \
+relationship and person.description exactly as described above: the same escalation stage should \
+land very differently for a professor or senior colleague (stay restrained, brief, and still \
+plausibly respectful even when direct or annoyed) than for a close friend or sibling (can get \
+blunter, funnier, more dramatic at the same stage). Because these messages send automatically with \
+no one checking them first, the safety rule below matters even more here than on a manually-reviewed \
+message: no matter how many times this exact debt has already been reminded about, never write a \
+real threat, never harassment, and never anything that isn't recognizably still a text message a \
+real person would send a friend/colleague/family member they're owed money by.
+
+"Angry" is a distinct tone from "Unhinged" — do not conflate them. "Unhinged" is comedic/dramatic \
+chaos (absurd, over-the-top, a bit ridiculous); it is NOT genuinely angry. "Angry" is the opposite \
+register: no jokes, no absurd imagery, no theatrics — short, blunt, visibly frustrated, like someone \
+who is actually out of patience, not performing a bit. It's still shaped by relationship exactly like \
+every other tone: angry-at-a-close-friend can be blunt and informal ("bro seriously, just send it"), \
+while angry-at-a-professor or a distant acquaintance stays terse and controlled rather than familiar \
+("This still hasn't been paid. Please send it today."), never actually disrespectful upward. "Angry" \
+is used only for automatic escalation, never a real threat, never harassment, and never abusive \
+language — it reads as genuinely fed up, not violent or menacing.
+
 Rules you must follow exactly:
-- Escalation tone must be one of exactly: "Casual", "Funny", "Passive-Aggressive", "Unhinged".
+- Escalation tone must be one of exactly: "Casual", "Funny", "Passive-Aggressive", "Unhinged", "Angry".
 - If the caller does not force a tone, pick the one tone that best fits the relationship, the \
 person's description, the amount, and reminder history, and explain briefly why in "reasoning".
 - "reasoning" must name the specific relationship label and any specific trait from \
@@ -405,7 +445,7 @@ enough yet.
 - The message must stay short (usually 1-3 sentences, sometimes just one line) and read like a \
 real Telegram message this specific person would actually send to this specific other person — \
 not a form letter, not marketing copy, not customer support.
-- Even at "Unhinged", the message must be funny/dramatic, never a real threat, never harassment.
+- Even at "Unhinged" or "Angry", the message must never be a real threat, never harassment, and never abusive language — "Unhinged" stays funny/dramatic; "Angry" stays blunt and fed up, not violent or menacing.
 - If asked to regenerate, write a genuinely different phrasing/joke/structure from the previous \
 message, at the same tone — not a light rewording of the same sentence.
 
@@ -416,6 +456,12 @@ export function buildReminderPrompt(params: {
   context: ReminderContext;
   forcedTone?: Tone;
   previousMessage?: string;
+  /**
+   * Set only by the automatic reminder scheduler (backend/reminders/scheduler.ts) for a follow-up
+   * that's escalating with no human review. Explains exactly what this particular follow-up stage
+   * should sound like, on top of `forcedTone` — see skills/escalationSkill.ts.
+   */
+  escalationNote?: string;
 }): string {
   const { history, debt } = params.context;
   const lines = [
@@ -427,6 +473,11 @@ export function buildReminderPrompt(params: {
       ? `\nThis person has already been reminded ${history.previousReminders} time(s) before` +
         (history.lastReminderTone ? `, most recently in a "${history.lastReminderTone}" tone.` : ".")
       : `\nThis is the first time this person has ever been reminded about anything — there is no prior familiarity to lean on.`,
+    history.remindersForThisDebt > 0
+      ? `\nThis exact debt (the same amount, same expense) has already been reminded about ${history.remindersForThisDebt} time(s) before` +
+        (history.lastToneForThisDebt ? `, most recently in a "${history.lastToneForThisDebt}" tone.` : ".") +
+        ` Keep referencing the same real expense/amount/items every time, never inventing a new fact or a new reason, and write this message as a natural escalation from that exact prior message, not a reset back to a first-contact tone.`
+      : ``,
     history.otherOpenDebts.length > 0
       ? `\nThis person also currently owes for ${history.otherOpenDebts.length} other separate thing(s): ${history.otherOpenDebts
           .map((d) => `${d.reason} (${d.amount})`)
@@ -435,11 +486,56 @@ export function buildReminderPrompt(params: {
     params.forcedTone
       ? `\nThe user has explicitly chosen the tone "${params.forcedTone}". Use exactly that tone.`
       : `\nNo tone was forced — choose the best-fitting tone yourself.`,
+    params.escalationNote ? `\n${params.escalationNote}` : ``,
   ].filter(Boolean);
   if (params.previousMessage) {
     lines.push(
-      `\nThe previous message was:\n"${params.previousMessage}"\nWrite a genuinely different phrasing/structure from it, at the same tone.`
+      params.escalationNote
+        ? `\nThe previous message about this exact debt was:\n"${params.previousMessage}"\nThis new message must clearly sound MORE annoyed/impatient/forceful than that exact previous message — a real escalation a reader could feel, not a same-level rephrasing and never milder. If you're unsure whether this draft is harsher than the one above, make it harsher.`
+        : `\nThe previous message was:\n"${params.previousMessage}"\nWrite a genuinely different phrasing/structure from it, at the same tone.`
     );
   }
   return lines.join("\n");
+}
+
+/**
+ * A short, one-time Telegram message sent the moment a debt is marked paid, thanking the person
+ * and (as a side effect) stopping the automatic reminder scheduler for that debt, since it only
+ * ever picks up debts still UNPAID. Deliberately a separate, much smaller prompt from
+ * REMINDER_SYSTEM_PROMPT above: this is not a reminder and must never ask for money, reference an
+ * amount as still owed, or reuse any escalation/urgency framing — it's just a quick, genuine thanks.
+ */
+export const THANK_YOU_SYSTEM_PROMPT = `You are ghost-writing a single short "thanks for paying" Telegram text from one real person to \
+another, for the "Unhinged Debt Collector" app. This is NOT a reminder and must never ask for \
+money, mention an amount as still owed, or use any reminder/escalation framing — the debt is \
+already paid; this message only exists to say thanks.
+
+Use person.relationship and person.description (if given) to shape how casual, warm, or brief it \
+is — a close friend or sibling can be very short and casual ("thank u!! 🙏" or "ty!"), a colleague \
+or acquaintance can be a touch more neutral but still natural, never formal or corporate.
+
+Rules:
+- Keep it very short: almost always a single short line, sometimes just a few words.
+- Sound like a real text message, not a receipt or an automated confirmation.
+- Never use em dashes (—) or en dashes (–) anywhere, and never substitute one for the other.
+- Never use corporate/customer-service phrasing ("Thank you for your payment", "We appreciate your prompt payment", "Your transaction has been completed", "kindly", "at your earliest convenience", or anything that reads like a receipt/automated notice).
+- At most one emoji, and only if it genuinely fits — plenty of good versions have none at all.
+- Never mention the amount, the reminders that were sent before, or ask for anything else.
+
+Respond with ONLY a JSON object, no prose outside it, in exactly this shape:
+{ "message": string }`;
+
+export function buildThankYouPrompt(context: ReminderContext): string {
+  const { person, debt } = context;
+  return [
+    `Context:\n${JSON.stringify({ person, debtReason: debt.reason }, null, 2)}`,
+    `\nThis person just paid what they owed for "${debt.reason}". Write the one-time thank-you text described in the system prompt.`,
+  ].join("\n");
+}
+
+/** Shared by normalizeGeneratedReminder above and the thank-you flow — see stripEmDashes's own comment. */
+export function normalizeGeneratedThankYou(parsed: { message?: unknown }): string {
+  const message = typeof parsed.message === "string" ? parsed.message.trim() : "";
+  if (!message) throw new AiRequestError("AI response was missing a valid thank-you message.");
+  return stripEmDashes(message);
 }

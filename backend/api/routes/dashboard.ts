@@ -5,9 +5,11 @@ import * as profileSkill from "../../../skills/profileSkill.js";
 
 export const dashboardRouter = Router();
 
-function toRecentDebt(debt: ExpenseDebt) {
-  const expense = debtSkill.getExpenseById(debt.expense_id);
-  const person = profileSkill.findPersonById(debt.person_id);
+async function toRecentDebt(debt: ExpenseDebt) {
+  const [expense, person] = await Promise.all([
+    debtSkill.getExpenseById(debt.expense_id),
+    profileSkill.findPersonById(debt.person_id),
+  ]);
   return {
     id: debt.id,
     personName: person?.name ?? null,
@@ -18,8 +20,8 @@ function toRecentDebt(debt: ExpenseDebt) {
   };
 }
 
-dashboardRouter.get("/", (_req, res) => {
-  const stats = getDashboardStats();
-  const recent = debtSkill.listAllDebts(5).map(toRecentDebt);
+dashboardRouter.get("/", async (_req, res) => {
+  const [stats, recentDebts] = await Promise.all([getDashboardStats(), debtSkill.listAllDebts(5)]);
+  const recent = await Promise.all(recentDebts.map(toRecentDebt));
   res.json({ stats, recent });
 });

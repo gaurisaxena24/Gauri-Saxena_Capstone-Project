@@ -20,7 +20,7 @@ import {
   formatResolvedSuffix,
 } from "../review/reviewMessage.js";
 import { sendTelegramMessage } from "../tools/sendTelegramMessage.js";
-import { upsertTelegramContact, verifyPersonByCode, verifyPersonTelegram } from "../database/database.js";
+import { getPrimaryUser, upsertTelegramContact, verifyPersonByCode, verifyPersonTelegram } from "../database/database.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -136,7 +136,7 @@ async function handleVerifyCommand(message: TelegramMessage): Promise<boolean> {
   if (!match) return false;
 
   const code = match[1];
-  const person = verifyPersonByCode(code, message.chat.id, message.from?.id ?? message.chat.id);
+  const person = await verifyPersonByCode(code, message.chat.id, message.from?.id ?? message.chat.id);
 
   if (!person) {
     console.log(`[Telegram] code attempt "${code}" (from message "${text.slice(0, 80)}") didn't match anyone, chat ${message.chat.id}`);
@@ -148,7 +148,15 @@ async function handleVerifyCommand(message: TelegramMessage): Promise<boolean> {
   }
 
   console.log(`[Telegram] verified ${person.name} (person id ${person.id}) via code, chat ${message.chat.id}`);
-  await tgSendMessage(message.chat.id, `You're verified! ${person.name} can now send you reminders here.`);
+  // Worded from the verifying person's own point of view: they are the one connecting, not the one
+  // being reminded, so the confirmation says who they're now connected to (the app's owner) rather
+  // than repeating their own name back at them.
+  const owner = await getPrimaryUser();
+  const ownerLabel = owner ? `@${owner.telegram_username}` : "the app owner";
+  await tgSendMessage(
+    message.chat.id,
+    `You're verified! You're now connected to ${ownerLabel}'s expense tracker and can receive reminders here.`
+  );
   return true;
 }
 
@@ -159,17 +167,17 @@ async function handleVerifyCommand(message: TelegramMessage): Promise<boolean> {
  * it here is what lets the web app's "Send via Telegram" resolve a person's
  * Telegram username to somewhere real to deliver to.
  */
-function recordTelegramContact(message: TelegramMessage): void {
+async function recordTelegramContact(message: TelegramMessage): Promise<void> {
   const textPreview = message.text ? ` text: "${message.text.slice(0, 80)}"` : "";
   if (message.from?.username) {
     console.log(
       `[Telegram] incoming message from @${message.from.username} (user id ${message.from.id}, chat ${message.chat.id})${textPreview}`
     );
-    upsertTelegramContact(message.from.username, message.chat.id);
+    await upsertTelegramContact(message.from.username, message.chat.id);
     // This incoming message is the only honest proof the Bot API gives us
     // that a claimed username belongs to a real, reachable Telegram account —
     // so it's also what marks a person's profile as Telegram-verified.
-    verifyPersonTelegram(message.from.username, message.chat.id, message.from.id);
+    await verifyPersonTelegram(message.from.username, message.chat.id, message.from.id);
   } else if (message.from) {
     // No public @username on this Telegram account — the Bot API gives no
     // other way to match it to a username a person typed into this app, so
@@ -183,7 +191,7 @@ function recordTelegramContact(message: TelegramMessage): void {
 
 export async function handleUpdate(update: TelegramUpdate): Promise<void> {
   if (update.message) {
-    recordTelegramContact(update.message);
+    await recordTelegramContact(update.message);
     if (await handleVerifyCommand(update.message)) return;
     await handleReplyEdit(update.message);
   } else if (update.callback_query) {
@@ -204,7 +212,7 @@ export async function startTelegramPoller(): Promise<void> {
     const backlog = await tgGetUpdates(0, 0);
     for (const update of backlog) {
       if (update.message) {
-        recordTelegramContact(update.message);
+        await recordTelegramContact(update.message);
         await handleVerifyCommand(update.message);
       }
     }

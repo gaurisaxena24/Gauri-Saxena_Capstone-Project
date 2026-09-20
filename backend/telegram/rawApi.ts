@@ -149,3 +149,37 @@ export function tgGetUpdates(
     allowed_updates: ["message", "callback_query"],
   });
 }
+
+export interface TelegramBotInfo {
+  id: number;
+  is_bot: boolean;
+  first_name: string;
+  username?: string;
+}
+
+/** Raw `getMe` call — who this bot is, per Telegram. Prefer `getBotUsername()` below, which caches. */
+export function tgGetMe(): Promise<TelegramBotInfo> {
+  return callTelegramApi<TelegramBotInfo>("getMe", {});
+}
+
+// The bot's own @username never changes at runtime, so it's fetched from Telegram at most once per
+// process and reused after that — cached only on success, so a transient failure (e.g. the token
+// isn't configured yet, or a network blip) doesn't get "stuck" and can be retried on the next call.
+let cachedBotUsername: string | null = null;
+
+/**
+ * The bot's own @username, straight from Telegram's `getMe` (never hardcoded/guessed) — lets the
+ * frontend build a real "search @BotUsername" instruction and a working https://t.me/BotUsername
+ * link. Returns null if TELEGRAM_BOT_TOKEN isn't configured or the call fails.
+ */
+export async function getBotUsername(): Promise<string | null> {
+  if (cachedBotUsername) return cachedBotUsername;
+  try {
+    const me = await tgGetMe();
+    if (me.username) cachedBotUsername = me.username;
+    return me.username ?? null;
+  } catch (error) {
+    console.error("Failed to fetch bot username via getMe:", error);
+    return null;
+  }
+}

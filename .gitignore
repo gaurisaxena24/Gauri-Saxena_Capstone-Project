@@ -1,8 +1,10 @@
 .DS_Store
 test-file.md
 
-# Environment variables
+# Environment variables (any .env.* variant/backup, e.g. .env.railway.bak — but keep the template)
 .env
+.env.*
+!.env.example
 
 # Node
 node_modules/
@@ -14,3 +16,9 @@ data/*.db
 
 # Uploaded bill photos
 data/uploads/
+
+# Claude Code build-log skill per-session state
+.claude/build-log-state/
+
+# Local Postgres protective snapshots
+.local-db-backups/

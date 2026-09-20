@@ -3,6 +3,7 @@ const TONE_STYLES: Record<string, string> = {
   Funny: "bg-[var(--color-tone-funny-soft)] text-[var(--color-tone-funny)]",
   "Passive-Aggressive": "bg-[var(--color-tone-passive-soft)] text-[var(--color-tone-passive)]",
   Unhinged: "bg-[var(--color-tone-unhinged-soft)] text-[var(--color-tone-unhinged)]",
+  Angry: "bg-[var(--color-tone-angry-soft)] text-[var(--color-tone-angry)]",
 };
 
 export function ToneBadge({ tone }: { tone: string | null }) {

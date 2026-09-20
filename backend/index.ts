@@ -25,6 +25,8 @@ import {
 } from "./tools/getDraftStatus.js";
 import { startTelegramPoller } from "./telegram/poller.js";
 import { startApiServer } from "./api/server.js";
+import { ensureDatabaseReady } from "./database/database.js";
+import { startReminderScheduler } from "./reminders/scheduler.js";
 
 const server = new McpServer({
   name: "unhinged-debt-collector-mcp-server",
@@ -93,7 +95,26 @@ function shouldPollTelegram(): boolean {
   return Boolean(process.env.RAILWAY_ENVIRONMENT) || process.env.ENABLE_TELEGRAM_POLLER === "true";
 }
 
+// The automatic reminder scheduler (backend/reminders/scheduler.ts) sends real Telegram messages
+// on its own timer, with no human approval, for as long as a debt stays UNPAID — running it from
+// more than one instance at once against the same database would double- or triple-send the exact
+// same escalating follow-up to the same person. Same problem class as shouldPollTelegram() above,
+// same fix: only the actually-deployed Railway instance runs it by default, with the equivalent
+// local opt-in (ENABLE_REMINDER_SCHEDULER=true) for testing it from your own machine — only when
+// you're sure nothing else (including the deployed instance) is also running it.
+function shouldRunReminderScheduler(): boolean {
+  return Boolean(process.env.RAILWAY_ENVIRONMENT) || process.env.ENABLE_REMINDER_SCHEDULER === "true";
+}
+
 async function main() {
+  try {
+    await ensureDatabaseReady();
+    console.log("[db] Connected to Postgres and schema is up to date.");
+  } catch (error) {
+    console.error("[db] Failed to connect to Postgres — check DATABASE_URL:", error);
+    process.exit(1);
+  }
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   if (shouldPollTelegram()) {
@@ -102,6 +123,15 @@ async function main() {
     console.log(
       "[telegram] Skipping the Telegram poller on this instance (not Railway, ENABLE_TELEGRAM_POLLER not set) " +
         "so it doesn't fight the deployed instance for the bot's single connection. Sending messages still works normally."
+    );
+  }
+  if (shouldRunReminderScheduler()) {
+    startReminderScheduler();
+  } else {
+    console.log(
+      "[reminder-scheduler] Skipping the automatic reminder scheduler on this instance (not Railway, " +
+        "ENABLE_REMINDER_SCHEDULER not set) so it doesn't double-send follow-ups alongside the deployed instance. " +
+        "Manually sending a debt's first reminder still works normally."
     );
   }
   startApiServer();
