@@ -21,6 +21,11 @@
 > | *(new — not in the original five)* | `agent/reminderAgent.ts` | `reminderSkill`, the send-attempt history |
 >
 > See `agent/Agents_DebtCollector` and `BUILD_LOG.md` for more detail and history.
+>
+> **One later addition:** every agent above only ever runs off a person's click. `agent/ReminderScheduler_info.md`
+> documents the one exception — an automatic, timer-driven follow-up scheduler
+> (`backend/reminders/scheduler.ts`) that calls this same Main Agent → skill chain on its own once a
+> debt's first reminder has been manually sent.
 
 | Agent              | What it does                                      | Why                                                           | Takes information from | Interacts with                                         |
 | ------------------ | ------------------------------------------------- | ------------------------------------------------------------- | ---------------------- | ------------------------------------------------------ |
