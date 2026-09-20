@@ -12,6 +12,11 @@
 > orchestration role (stop at preview, wait for explicit user action, never auto-send) is real and
 > enforced across separate HTTP endpoints in `backend/api/routes/debts.ts`, only ever chained
 > together by explicit user clicks in the frontend.
+>
+> **One exception, added later:** that "never auto-send" rule holds for a debt's *first* reminder
+> only. Once a person has manually approved and sent that first one, every reminder after it for
+> that same debt is generated and sent automatically on a timer, with no further click — see
+> `agent/ReminderScheduler_info.md`.
 
 ## Goal
 
