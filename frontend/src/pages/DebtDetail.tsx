@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ApiError, getDebt, markDebtPaid, removeDebt, type DebtDetail as DebtDetailData } from "../api/client";
+import { ApiError, getDebt, getHealth, markDebtPaid, removeDebt, type DebtDetail as DebtDetailData } from "../api/client";
 import { formatCurrency, formatDate } from "../lib/format";
 import { StatusBadge } from "../components/StatusBadge";
 import { ToneBadge } from "../components/ToneBadge";
@@ -13,6 +13,8 @@ export function DebtDetail() {
   const [error, setError] = useState<string | null>(null);
   const [markingPaid, setMarkingPaid] = useState(false);
   const [removing, setRemoving] = useState(false);
+  // Single source of truth is the backend's REMINDER_INTERVAL_MINUTES (backend/reminders/schedulerConfig.ts).
+  const [reminderIntervalMinutes, setReminderIntervalMinutes] = useState(5);
 
   function load() {
     setError(null);
@@ -22,6 +24,17 @@ export function DebtDetail() {
   }
 
   useEffect(load, [id]);
+  useEffect(() => {
+    getHealth()
+      .then((health) => setReminderIntervalMinutes(health.reminderIntervalMinutes))
+      .catch(() => {});
+  }, []);
+
+  // Automatic mode begins the moment a debt's first reminder is actually sent, and only ever ends
+  // when the debt is marked paid (backend/reminders/scheduler.ts) — no separate flag to read here.
+  const automaticRemindersActive = Boolean(
+    debt && debt.status === "UNPAID" && debt.reminders.some((r) => r.status === "SENT")
+  );
 
   async function handleMarkPaid() {
     if (!debt) return;
@@ -72,6 +85,13 @@ export function DebtDetail() {
         </div>
         <StatusBadge status={debt.status} />
       </div>
+
+      {automaticRemindersActive && (
+        <div className="mb-6 rounded-xl border border-accent/30 bg-accent-soft px-4 py-3 text-sm text-ink">
+          <span className="font-medium">Automatic reminders:</span> every {reminderIntervalMinutes} minute
+          {reminderIntervalMinutes === 1 ? "" : "s"} (test mode), escalating in tone, until this is marked as paid.
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
         <div className="rounded-2xl border border-border bg-card p-5">

@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { UPLOADS_DIR } from "../paths.js";
 import { isGroqConfigured } from "../ai/groqClient.js";
+import { getBotUsername } from "../telegram/rawApi.js";
 import { findProjectRoot } from "../paths.js";
 import { authRouter } from "./routes/auth.js";
 import { peopleRouter } from "./routes/people.js";
@@ -11,6 +12,7 @@ import { expensesRouter } from "./routes/expenses.js";
 import { debtsRouter } from "./routes/debts.js";
 import { remindersRouter } from "./routes/reminders.js";
 import { dashboardRouter } from "./routes/dashboard.js";
+import { getReminderIntervalMinutes } from "../reminders/schedulerConfig.js";
 
 const FRONTEND_DIST = resolve(findProjectRoot(import.meta.url), "frontend", "dist");
 
@@ -20,10 +22,18 @@ export function startApiServer(): void {
   app.use(express.json());
   app.use("/uploads", express.static(UPLOADS_DIR));
 
-  app.get("/api/health", (_req, res) => {
+  app.get("/api/health", async (_req, res) => {
     res.json({
       aiConfigured: isGroqConfigured(),
       telegramConfigured: Boolean(process.env.TELEGRAM_BOT_TOKEN),
+      // Single source of truth: backend/reminders/schedulerConfig.ts. The frontend's "Automatic
+      // reminders: every N minutes" text (DebtDetail.tsx) reads N from here rather than a
+      // hardcoded copy, so changing the real cadence is still a one-line backend change.
+      reminderIntervalMinutes: getReminderIntervalMinutes(),
+      // The bot's real @username, fetched from Telegram's getMe and cached in memory (see
+      // backend/telegram/rawApi.ts) — null if Telegram isn't configured or the call fails. Lets the
+      // People page build a real "search @BotUsername" instruction instead of a guessed one.
+      botUsername: await getBotUsername(),
     });
   });
 

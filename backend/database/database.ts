@@ -808,6 +808,30 @@ export async function getRemindersForDebt(debtId: number): Promise<Reminder[]> {
   return rows;
 }
 
+/**
+ * Debts eligible for an automatic follow-up reminder right now — used only by the reminder
+ * scheduler (backend/reminders/scheduler.ts). A debt qualifies when it's still UNPAID, it has at
+ * least one reminder that was actually SENT (i.e. its first reminder was manually approved and
+ * really went out — never before that), and the most recent SENT reminder's `sent_at` is at least
+ * `REMINDER_INTERVAL_MINUTES` old (expressed here as `cutoffIso`, the caller's
+ * now-minus-interval timestamp). Marking a debt PAID removes it from this result on the very next
+ * call — there is no separate "cancel automatic reminders" flag or mechanism.
+ */
+export async function getDebtsDueForAutomaticFollowUp(cutoffIso: string): Promise<ExpenseDebt[]> {
+  const database = await getDb();
+  const { rows } = await database.query<ExpenseDebt>(
+    `SELECT d.* FROM expense_debts d
+     WHERE d.status = 'UNPAID'
+       AND EXISTS (SELECT 1 FROM reminders r WHERE r.debt_id = d.id AND r.status = 'SENT')
+       AND (
+         SELECT MAX(r2.sent_at) FROM reminders r2 WHERE r2.debt_id = d.id AND r2.status = 'SENT'
+       ) <= $1
+     ORDER BY d.id ASC`,
+    [cutoffIso]
+  );
+  return rows;
+}
+
 export async function getRemindersForPerson(personId: number): Promise<Reminder[]> {
   const database = await getDb();
   const { rows } = await database.query<Reminder>(
@@ -867,5 +891,17 @@ export async function upsertUser(telegramUsername: string): Promise<UserRecord> 
     [username, now, now]
   );
   const { rows } = await database.query<UserRecord>(`SELECT * FROM users WHERE telegram_username = $1`, [username]);
+  return rows[0];
+}
+
+/**
+ * This is a single-user local-dev app (see routes/auth.ts) — there is exactly one real row in
+ * `users` in normal use. Used to name the actual app owner (by their own Telegram username, the
+ * only identity this table stores) in the bot's reply to someone who just verified themselves,
+ * instead of hardcoding a name. Returns undefined if no one has logged in yet.
+ */
+export async function getPrimaryUser(): Promise<UserRecord | undefined> {
+  const database = await getDb();
+  const { rows } = await database.query<UserRecord>(`SELECT * FROM users ORDER BY id ASC LIMIT 1`);
   return rows[0];
 }

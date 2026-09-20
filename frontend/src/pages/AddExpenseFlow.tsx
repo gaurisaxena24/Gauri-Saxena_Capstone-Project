@@ -5,27 +5,27 @@ import {
   createDebt,
   createManualExpense,
   createPerson,
-  editMessage,
   extractExpenseFromImage,
   generateMessage,
+  editMessage,
+  getHealth,
   listPeople,
+  removeDebt,
   sendDebtViaTelegram,
   updateExpense,
   type DebtSummary,
   type Expense,
   type ExpenseLineItem,
   type PersonSummary,
-  type ReminderContext,
-  type ShareMode,
 } from "../api/client";
 import { formatCurrency } from "../lib/format";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { ToneBadge } from "../components/ToneBadge";
+import { useAuth } from "../context/AuthContext";
 
-type Step = "choice" | "upload" | "manual" | "extracted" | "person" | "items" | "amount" | "message" | "done";
+type Step = "choice" | "upload" | "manual" | "extracted" | "people" | "items" | "review" | "done";
 
 type TaxHandling = "proportional" | "excluded" | "manual";
-type SplitMode = "ENTIRE" | "HALF" | "PERCENT" | "CUSTOM";
 
 function newLineItemId(): string {
   return `local_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -35,7 +35,15 @@ function itemLineTotal(item: ExpenseLineItem): number {
   return Number.isFinite(item.price) ? item.price : 0;
 }
 
-const TONES = ["Casual", "Funny", "Passive-Aggressive", "Unhinged"] as const;
+function round2(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
+// The FIRST reminder is the only one a person ever picks a tone for by hand — every reminder after
+// it is sent automatically by backend/reminders/scheduler.ts, which escalates through
+// "Passive-Aggressive" and then "Angry" on its own (see skills/escalationSkill.ts). Those two stay
+// reserved for automatic escalation, so the manual picker only ever offers these three.
+const INITIAL_TONES = ["Casual", "Funny", "Unhinged"] as const;
 const PAYMENT_METHODS = ["UPI", "Google Pay", "Cash", "Card", "Bank Transfer", "Other"];
 const DESIRED_ACTIONS = [
   "Send their share",
@@ -45,15 +53,28 @@ const DESIRED_ACTIONS = [
   "Other",
 ];
 
+/**
+ * A person-in-progress record used only while calculating shares. This is a per-item
+ * assignment key, never sent to the backend — the payer's key never becomes a debt row.
+ */
+interface RecipientCard {
+  debt: DebtSummary;
+  generating: boolean;
+  generationError: string | null;
+  reasoning: string | null;
+  editingMessage: boolean;
+  editError: string | null;
+  draftText: string;
+  sending: boolean;
+  sendError: { message: string; notVerified: boolean } | null;
+  sent: boolean;
+  selectedForSend: boolean;
+}
+
 function StepIndicator({ current }: { current: Step }) {
-  const order: Step[] = ["choice", "person", "amount", "message"];
-  const labels: Record<string, string> = { choice: "Expense", person: "Person", amount: "Amount", message: "Reminder" };
-  const effective =
-    current === "upload" || current === "manual" || current === "extracted"
-      ? "choice"
-      : current === "items"
-        ? "amount"
-        : current;
+  const order: Step[] = ["choice", "people", "items", "review"];
+  const labels: Record<string, string> = { choice: "Expense", people: "People", items: "Split", review: "Send" };
+  const effective = current === "upload" || current === "manual" || current === "extracted" ? "choice" : current;
   const currentIndex = order.indexOf(effective);
   return (
     <div className="mb-8 flex items-center gap-2">
@@ -103,7 +124,15 @@ function Field({
 
 export function AddExpenseFlow() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [step, setStep] = useState<Step>("choice");
+  // Synchronous double-send guard for sendOne — see its own comment for why `sending` state alone isn't enough.
+  const sendingIdsRef = useRef<Set<number>>(new Set());
+
+  // The payer is the currently authenticated session user (see AuthContext / backend/api/routes/auth.ts).
+  // This key is used ONLY to track the payer's own inclusion in an item's split for the arithmetic
+  // below — it is never sent to the backend and never becomes a debt row or a rendered "your share" line.
+  const payerKey = user ? `payer-${user.id}` : "payer";
 
   // Manual entry
   const [manualAmount, setManualAmount] = useState("");
@@ -124,16 +153,12 @@ export function AddExpenseFlow() {
   const [extractError, setExtractError] = useState<{ message: string; aiNotConfigured: boolean } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastFileRef = useRef<File | null>(null);
-  // A synchronous guard against a fast double-click firing two sends before React re-renders the
-  // disabled button — `sending` state alone can race, since both clicks can read it as `false`
-  // within the same tick.
-  const sendingRef = useRef(false);
 
   const [expense, setExpense] = useState<Expense | null>(null);
 
-  // Person tagging
+  // People who were there (existing verified-contacts feature) — the payer is never in this list.
   const [people, setPeople] = useState<PersonSummary[]>([]);
-  const [selectedPersonId, setSelectedPersonId] = useState<number | null>(null);
+  const [selectedPeopleIds, setSelectedPeopleIds] = useState<Set<number>>(new Set());
   const [addingNewPerson, setAddingNewPerson] = useState(false);
   const [newPersonName, setNewPersonName] = useState("");
   const [newPersonUsername, setNewPersonUsername] = useState("");
@@ -142,52 +167,34 @@ export function AddExpenseFlow() {
   const [newPersonDescription, setNewPersonDescription] = useState("");
   const [personError, setPersonError] = useState<string | null>(null);
   const [savingPerson, setSavingPerson] = useState(false);
+  const [loadingPeople, setLoadingPeople] = useState(false);
 
-  // Item selection (image-derived expenses only)
+  // Item-level assignment: itemAssignments[item.id] = Set of keys ("payer-<id>" or String(personId))
+  // of everyone who shared that item. An item's price is split equally among its assigned keys.
   const [editableItems, setEditableItems] = useState<ExpenseLineItem[]>([]);
-  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
+  const [itemAssignments, setItemAssignments] = useState<Record<string, Set<string>>>({});
   const [taxHandling, setTaxHandling] = useState<TaxHandling>("proportional");
   const [manualTaxAdjustment, setManualTaxAdjustment] = useState("");
   const [itemsError, setItemsError] = useState<string | null>(null);
-  const [usingItemSelection, setUsingItemSelection] = useState(false);
-  const [resolvedSelectedTotal, setResolvedSelectedTotal] = useState(0);
+  const [creatingDebts, setCreatingDebts] = useState(false);
 
-  // Amount / split
-  const [mode, setMode] = useState<ShareMode | null>(null);
-  const [customAmount, setCustomAmount] = useState("");
-  const [splitMode, setSplitMode] = useState<SplitMode | null>(null);
-  const [splitPercent, setSplitPercent] = useState("");
-  const [confirmingAmount, setConfirmingAmount] = useState(false);
-  const [amountError, setAmountError] = useState<string | null>(null);
-
-  // Optional context for the AI message
+  // Optional context for the AI message — applied to every recipient created from this bill.
   const [additionalContext, setAdditionalContext] = useState("");
   const [desiredActionChoice, setDesiredActionChoice] = useState("");
   const [customDesiredAction, setCustomDesiredAction] = useState("");
 
-  // Debt + message
-  const [debt, setDebt] = useState<(DebtSummary & { context?: ReminderContext }) | null>(null);
-  const [generating, setGenerating] = useState(false);
-  // Kept strictly separate from sendError: a failed generation must only ever offer to retry
-  // generation, never to send whatever (possibly stale, possibly nonexistent) message happens to
-  // be in `debt` — that conflation was the exact cause of "Retry" sometimes sending unintentionally.
-  const [generationError, setGenerationError] = useState<string | null>(null);
-  const [lastGenerateArgs, setLastGenerateArgs] = useState<{ tone?: string; regenerate: boolean } | null>(null);
-  const [reasoning, setReasoning] = useState<string | null>(null);
-  const [editingMessage, setEditingMessage] = useState(false);
-  const [draftText, setDraftText] = useState("");
-  const [sending, setSending] = useState(false);
-  const [sendError, setSendError] = useState<{ message: string; notVerified: boolean } | null>(null);
-  const [sendResult, setSendResult] = useState<{ note: string } | null>(null);
-  const [editError, setEditError] = useState<string | null>(null);
+  // One card per non-payer person who ends up owing something. The payer never appears here.
+  const [recipients, setRecipients] = useState<RecipientCard[]>([]);
 
+  // Read once for the "Approve & schedule" button/copy below — single source of truth is the
+  // backend's REMINDER_INTERVAL_MINUTES (backend/reminders/schedulerConfig.ts), never a hardcoded
+  // number here. Falls back to 5 (the real default) only if the health check hasn't resolved yet.
+  const [reminderIntervalMinutes, setReminderIntervalMinutes] = useState(5);
   useEffect(() => {
-    if (step === "person") {
-      listPeople()
-        .then((res) => setPeople(res.people))
-        .catch(() => setPeople([]));
-    }
-  }, [step]);
+    getHealth()
+      .then((health) => setReminderIntervalMinutes(health.reminderIntervalMinutes))
+      .catch(() => {});
+  }, []);
 
   async function handleFile(file: File) {
     lastFileRef.current = file;
@@ -210,6 +217,18 @@ export function AddExpenseFlow() {
     if (lastFileRef.current) handleFile(lastFileRef.current);
   }
 
+  async function loadPeople() {
+    setLoadingPeople(true);
+    try {
+      const res = await listPeople();
+      setPeople(res.people);
+    } catch {
+      setPeople([]);
+    } finally {
+      setLoadingPeople(false);
+    }
+  }
+
   async function submitManualExpense() {
     setManualError(null);
     const amount = Number(manualAmount);
@@ -230,7 +249,8 @@ export function AddExpenseFlow() {
         notes: manualNotes || undefined,
       });
       setExpense(created);
-      setStep("person");
+      setStep("people");
+      loadPeople();
     } catch (err) {
       setManualError(err instanceof Error ? err.message : "Couldn't save this expense.");
     } finally {
@@ -250,64 +270,99 @@ export function AddExpenseFlow() {
       category: expense.category,
     });
     setExpense(updated);
-    setStep("person");
+    setStep("people");
+    loadPeople();
   }
 
-  /** After picking who owes: itemized bills go to item selection first, everything else goes straight to the amount step. */
-  function goToAmountPhase() {
-    if (expense?.source === "IMAGE" && expense.lineItems.length > 0) {
-      setEditableItems(expense.lineItems);
-      setSelectedItemIds(new Set(expense.lineItems.map((i) => i.id)));
-      setTaxHandling("proportional");
-      setManualTaxAdjustment("");
-      setItemsError(null);
-      setStep("items");
-    } else {
-      setUsingItemSelection(false);
-      setStep("amount");
-    }
-  }
+  // ---- People step (who was there — payer excluded, existing contacts feature) ----
 
-  async function confirmPerson() {
-    setPersonError(null);
-    if (addingNewPerson) {
-      if (!newPersonName.trim() || !newPersonUsername.trim()) {
-        setPersonError("Name and Telegram username are required.");
-        return;
-      }
-      setSavingPerson(true);
-      try {
-        const person = await createPerson({
-          name: newPersonName.trim(),
-          telegramUsername: newPersonUsername.trim(),
-          relationship: newPersonRelationship.trim() || undefined,
-          phoneNumber: newPersonPhone.trim() || undefined,
-          notes: newPersonDescription.trim() || undefined,
-        });
-        setSelectedPersonId(person.id);
-        goToAmountPhase();
-      } catch (err) {
-        setPersonError(err instanceof Error ? err.message : "Couldn't save that person.");
-      } finally {
-        setSavingPerson(false);
-      }
-      return;
-    }
-
-    if (!selectedPersonId) {
-      setPersonError("Select someone first.");
-      return;
-    }
-    goToAmountPhase();
-  }
-
-  // ---- Item selection (image-derived expenses) ----
-
-  function toggleItem(id: string) {
-    setSelectedItemIds((prev) => {
+  function togglePersonSelected(id: number) {
+    setSelectedPeopleIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
+      return next;
+    });
+  }
+
+  async function addNewPerson() {
+    setPersonError(null);
+    if (!newPersonName.trim() || !newPersonUsername.trim()) {
+      setPersonError("Name and Telegram username are required.");
+      return;
+    }
+    setSavingPerson(true);
+    try {
+      const person = await createPerson({
+        name: newPersonName.trim(),
+        telegramUsername: newPersonUsername.trim(),
+        relationship: newPersonRelationship.trim() || undefined,
+        phoneNumber: newPersonPhone.trim() || undefined,
+        notes: newPersonDescription.trim() || undefined,
+      });
+      await loadPeople();
+      setSelectedPeopleIds((prev) => new Set(prev).add(person.id));
+      setAddingNewPerson(false);
+      setNewPersonName("");
+      setNewPersonUsername("");
+      setNewPersonRelationship("");
+      setNewPersonPhone("");
+      setNewPersonDescription("");
+    } catch (err) {
+      setPersonError(err instanceof Error ? err.message : "Couldn't save that person.");
+    } finally {
+      setSavingPerson(false);
+    }
+  }
+
+  function continueFromPeople() {
+    if (selectedPeopleIds.size === 0) {
+      setPersonError("Select at least one person.");
+      return;
+    }
+    setPersonError(null);
+    goToItemsPhase();
+  }
+
+  // ---- Item-level assignment ----
+
+  /** Itemized bills split item-by-item; anything else (manual entry, or an image with no line
+   * items) becomes a single synthetic "item" covering the whole total, so the same equal-split
+   * machinery below handles both cases without a separate whole/half/other mode. */
+  function goToItemsPhase() {
+    const baseItems: ExpenseLineItem[] =
+      expense?.source === "IMAGE" && expense.lineItems.length > 0
+        ? expense.lineItems
+        : [
+            {
+              id: newLineItemId(),
+              name: expense?.description || expense?.merchant || "Expense",
+              quantity: 1,
+              unitPrice: expense?.total ?? 0,
+              price: expense?.total ?? 0,
+              uncertain: false,
+            },
+          ];
+    setEditableItems(baseItems);
+    const defaultKeys = [payerKey, ...Array.from(selectedPeopleIds, String)];
+    const assignments: Record<string, Set<string>> = {};
+    baseItems.forEach((item) => {
+      assignments[item.id] = new Set(defaultKeys);
+    });
+    setItemAssignments(assignments);
+    setTaxHandling("proportional");
+    setManualTaxAdjustment("");
+    setItemsError(null);
+    setStep("items");
+  }
+
+  function toggleItemPerson(itemId: string, key: string) {
+    setItemAssignments((prev) => {
+      const next = { ...prev };
+      const set = new Set(next[itemId] ?? []);
+      if (set.has(key)) set.delete(key);
+      else set.add(key);
+      next[itemId] = set;
       return next;
     });
   }
@@ -329,9 +384,9 @@ export function AddExpenseFlow() {
 
   function deleteItem(id: string) {
     setEditableItems((prev) => prev.filter((item) => item.id !== id));
-    setSelectedItemIds((prev) => {
-      const next = new Set(prev);
-      next.delete(id);
+    setItemAssignments((prev) => {
+      const next = { ...prev };
+      delete next[id];
       return next;
     });
   }
@@ -339,158 +394,233 @@ export function AddExpenseFlow() {
   function addItem() {
     const id = newLineItemId();
     setEditableItems((prev) => [...prev, { id, name: "", quantity: 1, unitPrice: null, price: 0, uncertain: false }]);
-    setSelectedItemIds((prev) => new Set(prev).add(id));
+    setItemAssignments((prev) => ({ ...prev, [id]: new Set([payerKey, ...Array.from(selectedPeopleIds, String)]) }));
   }
 
-  const checkedItems = editableItems.filter((i) => selectedItemIds.has(i.id));
-  const selectedItemsTotal = checkedItems.reduce((sum, i) => sum + itemLineTotal(i), 0);
   const allItemsTotal = editableItems.reduce((sum, i) => sum + itemLineTotal(i), 0);
-  const netExtraCharges = (expense?.tax ?? 0) + (expense?.serviceCharge ?? 0) - (expense?.discount ?? 0);
+  const netExtraCharges =
+    (expense?.tax ?? 0) + (expense?.serviceCharge ?? 0) - (expense?.discount ?? 0) + (expense?.tip ?? 0);
   const hasExtraCharges = netExtraCharges !== 0;
-  const proportionalAdjustment =
-    allItemsTotal > 0 ? (selectedItemsTotal / allItemsTotal) * netExtraCharges : 0;
   const taxAdjustment =
-    taxHandling === "proportional"
-      ? proportionalAdjustment
-      : taxHandling === "excluded"
-        ? 0
-        : Number(manualTaxAdjustment || 0);
-  const previewAdjustedTotal = selectedItemsTotal + (hasExtraCharges ? taxAdjustment : 0);
+    taxHandling === "proportional" ? netExtraCharges : taxHandling === "excluded" ? 0 : Number(manualTaxAdjustment || 0);
+  const previewAdjustedTotal = allItemsTotal + (hasExtraCharges ? taxAdjustment : 0);
+  const anyItemUnassigned = editableItems.some((item) => (itemAssignments[item.id]?.size ?? 0) === 0);
 
-  function useWholeBillInstead() {
-    setUsingItemSelection(false);
-    setStep("amount");
-  }
+  const resolvedDesiredAction = desiredActionChoice === "Other" ? customDesiredAction.trim() : desiredActionChoice;
 
-  function confirmItems() {
-    if (checkedItems.length === 0) {
-      setItemsError("Select at least one item, add one manually, or use the whole bill amount instead.");
+  /**
+   * Splits every item equally among whoever is checked for it (payer included in the headcount
+   * when checked, never in the output), sums each person's per-item shares (payer included, purely
+   * for the arithmetic below), distributes the bill's tax/service charge/discount/tip proportionally
+   * to each person's pre-adjustment item subtotal, rounds to the paisa with any leftover remainder
+   * absorbed into the payer's own hidden share (see the comment further down for why), then creates
+   * one debt per non-payer person who ends up owing more than zero. Nobody who wasn't assigned to
+   * anything, and the payer themselves, is ever included in the result.
+   */
+  async function proceedToReview() {
+    if (!expense) return;
+    if (editableItems.length === 0) {
+      setItemsError("Add at least one item.");
+      return;
+    }
+    if (anyItemUnassigned) {
+      setItemsError("Every item needs at least one person selected before shares can be calculated.");
       return;
     }
     setItemsError(null);
-    setResolvedSelectedTotal(previewAdjustedTotal);
-    setUsingItemSelection(true);
-    setMode(null);
-    setSplitMode(null);
-    setStep("amount");
-  }
 
-  // ---- Amount / split ----
+    const perPersonPretax = new Map<string, number>();
+    const perPersonItems = new Map<string, Array<{ name: string; amount: number }>>();
 
-  const itemizedBase = resolvedSelectedTotal;
-  const itemizedComputedAmount =
-    splitMode === "ENTIRE"
-      ? itemizedBase
-      : splitMode === "HALF"
-        ? itemizedBase / 2
-        : splitMode === "PERCENT"
-          ? (itemizedBase * Number(splitPercent || 0)) / 100
-          : splitMode === "CUSTOM"
-            ? Number(customAmount)
-            : null;
+    for (const item of editableItems) {
+      const assigned = itemAssignments[item.id] ?? new Set<string>();
+      const price = itemLineTotal(item);
+      const share = assigned.size > 0 ? price / assigned.size : 0;
+      for (const key of assigned) {
+        perPersonPretax.set(key, (perPersonPretax.get(key) ?? 0) + share);
+        if (key !== payerKey) {
+          const list = perPersonItems.get(key) ?? [];
+          list.push({ name: item.name || "Item", amount: round2(share) });
+          perPersonItems.set(key, list);
+        }
+      }
+    }
 
-  const computedAmount = usingItemSelection
-    ? itemizedComputedAmount
-    : mode === "FULL"
-      ? (expense?.total ?? 0)
-      : mode === "HALF"
-        ? (expense?.total ?? 0) / 2
-        : mode === "CUSTOM"
-          ? Number(customAmount)
-          : null;
+    // Distribute tax/service charge/discount/tip proportionally to each person's (unrounded) share
+    // of the pre-adjustment item subtotal -- including the payer's own hidden share, since the
+    // payer's fraction of the bill is needed to work out everyone else's fraction correctly.
+    if (!perPersonPretax.has(payerKey)) perPersonPretax.set(payerKey, 0);
+    const exactFinals = new Map<string, number>();
+    for (const [key, pretax] of perPersonPretax) {
+      const adjShare = hasExtraCharges && allItemsTotal > 0 ? (pretax / allItemsTotal) * taxAdjustment : 0;
+      exactFinals.set(key, pretax + adjShare);
+    }
 
-  const customAmountInvalid = usingItemSelection
-    ? splitMode === "CUSTOM" && (!customAmount || !Number.isFinite(Number(customAmount)) || Number(customAmount) <= 0)
-    : mode === "CUSTOM" && (!customAmount || !Number.isFinite(Number(customAmount)) || Number(customAmount) <= 0);
+    // Round every person's share to paise using integer-cent arithmetic (avoids float drift), then
+    // hand whatever tiny leftover the roundings create to the payer's own hidden share -- never to
+    // a share that is actually shown to, or collected from, another person. That keeps every
+    // visible/collected amount exactly equal to that person's fair rounded proportional share,
+    // while payer + everyone else still reconciles exactly, to the paisa, to item subtotal + tax +
+    // service charge - discount + tip. This must hold even with no adjustments at all.
+    const totalPaise = Math.round((allItemsTotal + (hasExtraCharges ? taxAdjustment : 0)) * 100);
+    const roundedPaise = new Map<string, number>();
+    let sumPaise = 0;
+    for (const [key, exact] of exactFinals) {
+      const paise = Math.round(exact * 100);
+      roundedPaise.set(key, paise);
+      sumPaise += paise;
+    }
+    const remainderPaise = totalPaise - sumPaise;
+    if (remainderPaise !== 0) {
+      roundedPaise.set(payerKey, (roundedPaise.get(payerKey) ?? 0) + remainderPaise);
+    }
 
-  const splitPercentInvalid =
-    usingItemSelection && splitMode === "PERCENT" && (!splitPercent || !Number.isFinite(Number(splitPercent)) || Number(splitPercent) <= 0);
+    const results: Array<{ personId: number; amount: number; items: Array<{ name: string; amount: number }> }> = [];
+    for (const personId of selectedPeopleIds) {
+      const key = String(personId);
+      const final = (roundedPaise.get(key) ?? 0) / 100;
+      if (final <= 0) continue;
+      // perPersonItems holds each item's raw pre-tax/tip share; scale it by this person's own
+      // final/pretax ratio so the displayed item breakdown actually sums to `final` (the real
+      // amount owed) instead of silently omitting their share of tax/service/discount/tip.
+      const pretax = perPersonPretax.get(key) ?? 0;
+      const ratio = pretax > 0 ? final / pretax : 1;
+      const rawItems = perPersonItems.get(key) ?? [];
+      const items = ratio === 1 ? rawItems : rawItems.map((i) => ({ ...i, amount: round2(i.amount * ratio) }));
+      results.push({ personId, amount: final, items });
+    }
 
-  async function confirmAmount() {
-    if (!expense || !selectedPersonId) return;
-    if (usingItemSelection ? !splitMode : !mode) return;
-    if (customAmountInvalid || splitPercentInvalid) {
-      setAmountError("Enter a valid amount greater than 0.");
+    setCreatingDebts(true);
+    if (recipients.length > 0) {
+      // If this is a recalculation after Back → edit → Calculate shares again, the debts
+      // currently in `recipients` were created by a previous run of this same function for
+      // this same expense — delete them first so the new results replace rather than
+      // duplicate them. Only ever touches debts this flow itself created in this session.
+      // Promise.allSettled (not .all): if some deletes fail, `recipients` is trimmed down to only
+      // the ones that are still actually undeleted, so a retry re-attempts just those instead of
+      // re-deleting already-gone ids (which would 404 forever and strand this flow).
+      const settled = await Promise.allSettled(recipients.map((r) => removeDebt(r.debt.id)));
+      const stillNeedsRemoval = recipients.filter((_, i) => settled[i].status === "rejected");
+      if (stillNeedsRemoval.length > 0) {
+        setRecipients(stillNeedsRemoval);
+        setCreatingDebts(false);
+        setItemsError("Couldn't clear all previous shares before recalculating — try again.");
+        return;
+      }
+      setRecipients([]);
+    }
+
+    if (results.length === 0) {
+      setRecipients([]);
+      setStep("review");
+      setCreatingDebts(false);
       return;
     }
-    setAmountError(null);
-    setConfirmingAmount(true);
-    const resolvedDesiredAction =
-      desiredActionChoice === "Other" ? customDesiredAction.trim() : desiredActionChoice;
+
     try {
-      const created = await createDebt({
-        expenseId: expense.id,
-        personId: selectedPersonId,
-        mode: usingItemSelection ? "CUSTOM" : (mode as ShareMode),
-        customAmount: usingItemSelection ? Number(computedAmount) : mode === "CUSTOM" ? Number(customAmount) : undefined,
-        selectedItems: usingItemSelection
-          ? checkedItems.map((i) => ({ name: i.name || "Item", amount: itemLineTotal(i) }))
-          : undefined,
-        additionalContext: additionalContext.trim() || undefined,
-        desiredAction: resolvedDesiredAction || undefined,
-      });
-      setDebt(created);
-      setStep("message");
-      await runGenerate(created.id, undefined, false);
+      const created = await Promise.all(
+        results.map((r) =>
+          createDebt({
+            expenseId: expense.id,
+            personId: r.personId,
+            mode: "CUSTOM",
+            customAmount: r.amount,
+            selectedItems: r.items.length > 0 ? r.items : undefined,
+            additionalContext: additionalContext.trim() || undefined,
+            desiredAction: resolvedDesiredAction || undefined,
+          })
+        )
+      );
+      const cards: RecipientCard[] = created.map((debt) => ({
+        debt,
+        generating: false,
+        generationError: null,
+        reasoning: null,
+        editingMessage: false,
+        editError: null,
+        draftText: debt.message ?? "",
+        sending: false,
+        sendError: null,
+        sent: false,
+        selectedForSend: true,
+      }));
+      setRecipients(cards);
+      setStep("review");
+      cards.forEach((c) => runGenerateFor(c.debt.id, undefined, false));
     } catch (err) {
-      setAmountError(err instanceof Error ? err.message : "Couldn't confirm this debt.");
+      setItemsError(err instanceof Error ? err.message : "Couldn't calculate shares.");
     } finally {
-      setConfirmingAmount(false);
+      setCreatingDebts(false);
     }
   }
 
-  async function runGenerate(debtId: number, tone: string | undefined, regenerate: boolean) {
-    setLastGenerateArgs({ tone, regenerate });
-    setGenerating(true);
-    setGenerationError(null);
+  // ---- Review / send (payer never appears here — only people who owe the payer) ----
+
+  async function runGenerateFor(debtId: number, tone: string | undefined, regenerate: boolean) {
+    setRecipients((prev) => prev.map((c) => (c.debt.id === debtId ? { ...c, generating: true, generationError: null } : c)));
     try {
       const result = await generateMessage(debtId, { tone, regenerate });
-      setDebt((prev) => (prev ? { ...prev, message: result.message, tone: result.tone } : prev));
-      setReasoning(result.reasoning || null);
-      setDraftText(result.message ?? "");
+      setRecipients((prev) =>
+        prev.map((c) =>
+          c.debt.id === debtId
+            ? {
+                ...c,
+                debt: { ...c.debt, message: result.message, tone: result.tone },
+                reasoning: result.reasoning || null,
+                draftText: result.message ?? "",
+                generating: false,
+              }
+            : c
+        )
+      );
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Couldn't generate the message. Please try again.";
-      setGenerationError(message);
-    } finally {
-      setGenerating(false);
+      setRecipients((prev) => prev.map((c) => (c.debt.id === debtId ? { ...c, generating: false, generationError: message } : c)));
     }
   }
 
-  /** The ONLY thing "Try Again" on a failed generation does — replays the exact same generate call. Never sends. */
-  function retryGeneration() {
-    if (!debt || !lastGenerateArgs) return;
-    runGenerate(debt.id, lastGenerateArgs.tone, lastGenerateArgs.regenerate);
-  }
-
-  async function saveEditedMessage() {
-    if (!debt) return;
-    setEditError(null);
+  async function saveEditedMessageFor(debtId: number) {
+    const card = recipients.find((c) => c.debt.id === debtId);
+    if (!card) return;
+    setRecipients((prev) => prev.map((c) => (c.debt.id === debtId ? { ...c, editError: null } : c)));
     try {
-      const updated = await editMessage(debt.id, draftText);
-      setDebt(updated);
-      setEditingMessage(false);
+      const updated = await editMessage(debtId, card.draftText);
+      setRecipients((prev) => prev.map((c) => (c.debt.id === debtId ? { ...c, debt: updated, editingMessage: false } : c)));
     } catch (err) {
-      setEditError(err instanceof Error ? err.message : "Couldn't save your edit.");
+      const message = err instanceof Error ? err.message : "Couldn't save your edit.";
+      setRecipients((prev) => prev.map((c) => (c.debt.id === debtId ? { ...c, editError: message } : c)));
     }
   }
 
-  async function handleSend() {
-    if (!debt || sendingRef.current) return;
-    sendingRef.current = true;
-    setSending(true);
-    setSendError(null);
+  async function sendOne(debtId: number) {
+    // `sending` in React state alone can race: a fast double-click (e.g. on "Retry Send") can fire
+    // this twice before the first setRecipients call above commits and re-renders, so both calls
+    // would read the same stale `sending: false` and both send a real duplicate Telegram message.
+    // sendingIdsRef is checked and updated synchronously, before any state update or await, to close
+    // that window.
+    if (sendingIdsRef.current.has(debtId)) return;
+    sendingIdsRef.current.add(debtId);
+    setRecipients((prev) => prev.map((c) => (c.debt.id === debtId ? { ...c, sending: true, sendError: null } : c)));
     try {
-      const result = await sendDebtViaTelegram(debt.id);
-      setSendResult(result);
-      setStep("done");
+      await sendDebtViaTelegram(debtId);
+      setRecipients((prev) => prev.map((c) => (c.debt.id === debtId ? { ...c, sending: false, sent: true } : c)));
     } catch (err) {
       const notVerified = err instanceof ApiError && err.notVerified;
-      setSendError({ message: err instanceof Error ? err.message : "Couldn't send the message.", notVerified });
+      const message = err instanceof Error ? err.message : "Couldn't send the message.";
+      setRecipients((prev) => prev.map((c) => (c.debt.id === debtId ? { ...c, sending: false, sendError: { message, notVerified } } : c)));
     } finally {
-      sendingRef.current = false;
-      setSending(false);
+      sendingIdsRef.current.delete(debtId);
     }
   }
+
+  /** Sends every selected, not-yet-sent, ready recipient's message in one action. */
+  async function sendSelected() {
+    const targets = recipients.filter((c) => c.selectedForSend && !c.sent && c.debt.message && !c.sending);
+    await Promise.all(targets.map((c) => sendOne(c.debt.id)));
+  }
+
+  const sendingAny = recipients.some((c) => c.sending);
+  const canSendSelected = recipients.some((c) => c.selectedForSend && !c.sent && c.debt.message && !c.sending);
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -708,27 +838,41 @@ export function AddExpenseFlow() {
         </div>
       )}
 
-      {step === "person" && (
+      {step === "people" && (
         <div>
-          <h1 className="font-display mb-2 text-2xl font-bold text-ink">Who owes you?</h1>
-          <p className="mb-6 text-sm text-ink-soft">Pick someone you've tracked before, or add someone new.</p>
+          <button
+            onClick={() => setStep(expense?.source === "IMAGE" ? "extracted" : "manual")}
+            className="mb-4 text-sm text-ink-soft hover:text-ink"
+          >
+            ← Back
+          </button>
+          <h1 className="font-display mb-2 text-2xl font-bold text-ink">Who was there?</h1>
+          <p className="mb-6 text-sm text-ink-soft">
+            Select everyone else involved in this bill — you'll assign who had what next. (You're always
+            included automatically as the payer — no need to add yourself.)
+          </p>
+
+          {loadingPeople && <p className="mb-4 text-sm text-ink-soft">Loading people…</p>}
 
           {!addingNewPerson && (
             <div className="space-y-2">
               {people.map((person) => (
                 <button
                   key={person.id}
-                  onClick={() => setSelectedPersonId(person.id)}
+                  onClick={() => togglePersonSelected(person.id)}
                   className={`flex w-full items-center justify-between rounded-xl border p-4 text-left transition-colors ${
-                    selectedPersonId === person.id ? "border-ink bg-ink/[0.03]" : "border-border bg-card hover:border-ink/30"
+                    selectedPeopleIds.has(person.id) ? "border-ink bg-ink/[0.03]" : "border-border bg-card hover:border-ink/30"
                   }`}
                 >
-                  <div>
-                    <p className="font-medium text-ink">{person.name}</p>
-                    <p className="text-sm text-ink-faint">
-                      @{person.telegramUsername} · {person.relationship ?? "no relationship set"}
-                      {person.telegramVerified && <span className="text-[var(--color-success)]"> · verified</span>}
-                    </p>
+                  <div className="flex items-center gap-3">
+                    <input type="checkbox" readOnly checked={selectedPeopleIds.has(person.id)} className="h-4 w-4" />
+                    <div>
+                      <p className="font-medium text-ink">{person.name}</p>
+                      <p className="text-sm text-ink-faint">
+                        @{person.telegramUsername} · {person.relationship ?? "no relationship set"}
+                        {person.telegramVerified && <span className="text-[var(--color-success)]"> · verified</span>}
+                      </p>
+                    </div>
                   </div>
                   {person.totalOwed > 0 && (
                     <span className="text-sm font-medium text-accent-dark">{formatCurrency(person.totalOwed)} owed</span>
@@ -774,22 +918,39 @@ export function AddExpenseFlow() {
             </div>
           )}
 
-          <button
-            onClick={confirmPerson}
-            disabled={savingPerson || (!addingNewPerson && !selectedPersonId)}
-            className="mt-6 rounded-full bg-ink px-6 py-2.5 text-sm font-semibold text-paper disabled:opacity-40"
-          >
-            {savingPerson ? "Saving…" : "Continue"}
-          </button>
+          {addingNewPerson ? (
+            <button
+              onClick={addNewPerson}
+              disabled={savingPerson}
+              className="mt-6 rounded-full bg-ink px-6 py-2.5 text-sm font-semibold text-paper disabled:opacity-40"
+            >
+              {savingPerson ? "Saving…" : "Add person"}
+            </button>
+          ) : (
+            <button
+              onClick={continueFromPeople}
+              disabled={selectedPeopleIds.size === 0}
+              className="mt-6 rounded-full bg-ink px-6 py-2.5 text-sm font-semibold text-paper disabled:opacity-40"
+            >
+              Continue
+            </button>
+          )}
         </div>
       )}
 
       {step === "items" && expense && (
         <div>
-          <h1 className="font-display mb-2 text-2xl font-bold text-ink">What's their share made of?</h1>
-          <p className="mb-6 text-sm text-ink-soft">
-            Check the items {people.find((p) => p.id === selectedPersonId)?.name ?? "this person"} actually owes for. Fix
-            anything that's wrong — OCR/vision isn't perfect.
+          <button onClick={() => setStep("people")} className="mb-4 text-sm text-ink-soft hover:text-ink">
+            ← Back
+          </button>
+          <h1 className="font-display mb-2 text-2xl font-bold text-ink">Who had what?</h1>
+          <p className="mb-2 text-sm text-ink-soft">
+            For each item, select everyone who shared it — including "Me" if you had some too. Its price splits
+            equally among whoever's selected. Fix anything OCR/vision got wrong.
+          </p>
+          <p className="mb-6 text-xs text-ink-faint">
+            Under "Had this:" — <span className="rounded-full bg-ink px-2 py-0.5 text-paper">black</span> means that
+            person is included in this item's split; <span className="rounded-full bg-ink/5 px-2 py-0.5 text-ink-soft">grey</span> means they're not.
           </p>
 
           {expense.confidence !== null && expense.confidence < 0.5 && (
@@ -798,57 +959,75 @@ export function AddExpenseFlow() {
             </div>
           )}
 
-          <div className="space-y-2">
-            {editableItems.map((item) => (
-              <div
-                key={item.id}
-                className={`flex items-center gap-3 rounded-xl border p-3 ${
-                  item.uncertain ? "border-amber-400 bg-amber-50/40" : "border-border bg-card"
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedItemIds.has(item.id)}
-                  onChange={() => toggleItem(item.id)}
-                  className="h-4 w-4 shrink-0"
-                />
-                <input
-                  value={item.name}
-                  onChange={(e) => updateItem(item.id, { name: e.target.value })}
-                  placeholder="Item name"
-                  className="min-w-0 flex-1 rounded-md border border-border bg-paper px-2 py-1 text-sm text-ink outline-none focus:border-ink"
-                />
-                <input
-                  type="number"
-                  value={item.quantity ?? ""}
-                  onChange={(e) => updateItem(item.id, { quantity: e.target.value ? Number(e.target.value) : null })}
-                  placeholder="qty"
-                  className="w-14 rounded-md border border-border bg-paper px-2 py-1 text-sm text-ink outline-none focus:border-ink"
-                />
-                <span className="text-xs text-ink-faint">×</span>
-                <input
-                  type="number"
-                  value={item.unitPrice ?? ""}
-                  onChange={(e) => updateItem(item.id, { unitPrice: e.target.value ? Number(e.target.value) : null })}
-                  placeholder="unit ₹"
-                  className="w-20 rounded-md border border-border bg-paper px-2 py-1 text-sm text-ink outline-none focus:border-ink"
-                />
-                <span className="text-xs text-ink-faint">=</span>
-                <input
-                  type="number"
-                  value={item.price}
-                  onChange={(e) => updateItem(item.id, { price: Number(e.target.value) || 0 })}
-                  className="w-20 rounded-md border border-border bg-paper px-2 py-1 text-sm font-medium text-ink outline-none focus:border-ink"
-                />
-                <button
-                  onClick={() => deleteItem(item.id)}
-                  className="shrink-0 text-ink-faint hover:text-red-500"
-                  aria-label="Delete item"
+          <div className="space-y-3">
+            {editableItems.map((item) => {
+              const assigned = itemAssignments[item.id] ?? new Set<string>();
+              return (
+                <div
+                  key={item.id}
+                  className={`rounded-xl border p-3 ${
+                    item.uncertain ? "border-amber-400 bg-amber-50/40" : "border-border bg-card"
+                  }`}
                 >
-                  ×
-                </button>
-              </div>
-            ))}
+                  <div className="flex items-center gap-3">
+                    <input
+                      value={item.name}
+                      onChange={(e) => updateItem(item.id, { name: e.target.value })}
+                      placeholder="Item name"
+                      className="min-w-0 flex-1 rounded-md border border-border bg-paper px-2 py-1 text-sm text-ink outline-none focus:border-ink"
+                    />
+                    <span className="text-xs text-ink-faint">₹</span>
+                    <input
+                      type="number"
+                      value={item.price}
+                      onChange={(e) => updateItem(item.id, { price: Number(e.target.value) || 0 })}
+                      placeholder="Amount"
+                      className="w-24 rounded-md border border-border bg-paper px-2 py-1 text-sm font-medium text-ink outline-none focus:border-ink"
+                    />
+                    <button
+                      onClick={() => deleteItem(item.id)}
+                      className="shrink-0 text-ink-faint hover:text-red-500"
+                      aria-label="Delete item"
+                    >
+                      ×
+                    </button>
+                  </div>
+
+                  <div className="mt-2 flex flex-wrap items-center gap-2 pl-1">
+                    <span className="text-xs text-ink-faint">Had this:</span>
+                    <button
+                      type="button"
+                      onClick={() => toggleItemPerson(item.id, payerKey)}
+                      className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                        assigned.has(payerKey) ? "bg-ink text-paper" : "bg-ink/5 text-ink-soft hover:bg-ink/10"
+                      }`}
+                    >
+                      Me
+                    </button>
+                    {people
+                      .filter((p) => selectedPeopleIds.has(p.id))
+                      .map((p) => {
+                        const key = String(p.id);
+                        return (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => toggleItemPerson(item.id, key)}
+                            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                              assigned.has(key) ? "bg-ink text-paper" : "bg-ink/5 text-ink-soft hover:bg-ink/10"
+                            }`}
+                          >
+                            {p.name}
+                          </button>
+                        );
+                      })}
+                  </div>
+                  {assigned.size === 0 && (
+                    <p className="mt-1 pl-1 text-xs text-[var(--color-danger)]">Select at least one person for this item.</p>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           <button
@@ -859,24 +1038,23 @@ export function AddExpenseFlow() {
           </button>
 
           <div className="mt-5 flex items-center justify-between rounded-xl border border-border bg-card p-4 text-sm">
-            <span className="text-ink-soft">Selected items total</span>
-            <span className="font-display text-lg font-bold text-ink">{formatCurrency(selectedItemsTotal)}</span>
+            <span className="text-ink-soft">Items total</span>
+            <span className="font-display text-lg font-bold text-ink">{formatCurrency(allItemsTotal)}</span>
           </div>
           <div className="mt-2 flex items-center justify-between px-1 text-xs text-ink-faint">
-            <span>Bill total</span>
+            <span>Bill total (extracted)</span>
             <span>{formatCurrency(expense.total)}</span>
           </div>
 
           {hasExtraCharges && (
             <div className="mt-4 space-y-3 rounded-2xl border border-border bg-card p-5">
               <p className="text-sm font-medium text-ink">
-                This bill has tax/service/discount ({formatCurrency(netExtraCharges)} net) — how should it apply to the
-                selected items?
+                This bill has tax/service/discount/tip ({formatCurrency(netExtraCharges)} net) — how should it apply?
               </p>
               <div className="flex flex-wrap gap-2">
                 {(
                   [
-                    ["proportional", "Included proportionally"],
+                    ["proportional", "Split proportionally"],
                     ["excluded", "Excluded"],
                     ["manual", "Manually adjust"],
                   ] as Array<[TaxHandling, string]>
@@ -902,100 +1080,11 @@ export function AddExpenseFlow() {
                 />
               )}
               <p className="text-xs text-ink-faint">
-                Selected items ({formatCurrency(selectedItemsTotal)}) {taxAdjustment >= 0 ? "+" : "-"}{" "}
-                {formatCurrency(Math.abs(taxAdjustment))} = {formatCurrency(previewAdjustedTotal)}
+                Each person's tax/service/discount/tip cut is proportional to their share of the items — split across
+                whoever's assigned to each item, same as the item prices. Items ({formatCurrency(allItemsTotal)}){" "}
+                {taxAdjustment >= 0 ? "+" : "-"} {formatCurrency(Math.abs(taxAdjustment))} = {formatCurrency(previewAdjustedTotal)}
               </p>
             </div>
-          )}
-
-          {itemsError && (
-            <div className="mt-4">
-              <ErrorBanner message={itemsError} />
-            </div>
-          )}
-
-          <div className="mt-6 flex flex-wrap items-center gap-3">
-            <button
-              onClick={confirmItems}
-              className="rounded-full bg-ink px-6 py-2.5 text-sm font-semibold text-paper"
-            >
-              Continue
-            </button>
-            <button onClick={useWholeBillInstead} className="text-sm font-medium text-ink-soft hover:text-ink">
-              Use whole bill amount instead
-            </button>
-          </div>
-        </div>
-      )}
-
-      {step === "amount" && expense && (
-        <div>
-          <h1 className="font-display mb-2 text-2xl font-bold text-ink">How much do they owe?</h1>
-          <p className="mb-6 text-sm text-ink-soft">
-            {usingItemSelection
-              ? `Selected items come to ${formatCurrency(resolvedSelectedTotal)}.`
-              : `Expense total was ${formatCurrency(expense.total)}.`}
-          </p>
-
-          {usingItemSelection ? (
-            <>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                {(
-                  [
-                    ["ENTIRE", "Entire selected amount"],
-                    ["HALF", "Half"],
-                    ["PERCENT", "Custom %"],
-                    ["CUSTOM", "Custom amount"],
-                  ] as Array<[SplitMode, string]>
-                ).map(([m, label]) => (
-                  <button
-                    key={m}
-                    onClick={() => setSplitMode(m)}
-                    className={`rounded-xl border p-4 text-center text-sm font-medium transition-colors ${
-                      splitMode === m ? "border-ink bg-ink/[0.03] text-ink" : "border-border bg-card text-ink-soft hover:border-ink/30"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-              {splitMode === "PERCENT" && (
-                <div className="mt-4">
-                  <Field label="Percentage" value={splitPercent} onChange={setSplitPercent} type="number" placeholder="50" />
-                </div>
-              )}
-              {splitMode === "CUSTOM" && (
-                <div className="mt-4">
-                  <Field label="Custom amount" value={customAmount} onChange={setCustomAmount} type="number" />
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="grid grid-cols-3 gap-3">
-              {(["FULL", "HALF", "CUSTOM"] as ShareMode[]).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setMode(m)}
-                  className={`rounded-xl border p-4 text-center font-medium capitalize transition-colors ${
-                    mode === m ? "border-ink bg-ink/[0.03] text-ink" : "border-border bg-card text-ink-soft hover:border-ink/30"
-                  }`}
-                >
-                  {m === "FULL" ? "Full amount" : m.toLowerCase()}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {!usingItemSelection && mode === "CUSTOM" && (
-            <div className="mt-4">
-              <Field label="Custom amount" value={customAmount} onChange={setCustomAmount} type="number" />
-            </div>
-          )}
-
-          {(usingItemSelection ? splitMode : mode) && computedAmount !== null && !customAmountInvalid && !splitPercentInvalid && (
-            <p className="mt-5 font-display text-xl font-bold text-ink">
-              {people.find((p) => p.id === selectedPersonId)?.name ?? "This person"} owes {formatCurrency(computedAmount)}
-            </p>
           )}
 
           <div className="mt-6 space-y-4 rounded-2xl border border-border bg-card p-5">
@@ -1037,181 +1126,200 @@ export function AddExpenseFlow() {
             </div>
           </div>
 
-          {amountError && (
+          {itemsError && (
             <div className="mt-4">
-              <ErrorBanner message={amountError} />
+              <ErrorBanner message={itemsError} />
             </div>
           )}
 
           <button
-            onClick={confirmAmount}
-            disabled={(usingItemSelection ? !splitMode : !mode) || customAmountInvalid || splitPercentInvalid || confirmingAmount}
+            onClick={proceedToReview}
+            disabled={creatingDebts || anyItemUnassigned || editableItems.length === 0}
             className="mt-6 rounded-full bg-ink px-6 py-2.5 text-sm font-semibold text-paper disabled:opacity-40"
           >
-            {confirmingAmount ? "Confirming…" : "Confirm"}
+            {creatingDebts ? "Calculating…" : "Calculate shares"}
           </button>
         </div>
       )}
 
-      {step === "message" && debt && (
+      {step === "review" && (
         <div>
-          <h1 className="font-display mb-2 text-2xl font-bold text-ink">Your reminder</h1>
-          <p className="mb-6 text-sm text-ink-soft">
-            Built automatically from the expense, {debt.personName}'s history, and your relationship.
-          </p>
+          <button onClick={() => setStep("items")} className="mb-4 text-sm text-ink-soft hover:text-ink">
+            ← Back
+          </button>
+          <h1 className="font-display mb-2 text-2xl font-bold text-ink">People who owe you</h1>
 
-          {generating && !debt.message && <p className="text-sm text-ink-soft">Writing a reminder…</p>}
-
-          {!debt.message && !generating && generationError && (
-            <div className="rounded-2xl border border-border bg-card p-6 text-center">
-              <p className="font-medium text-ink">Couldn't generate the message.</p>
-              <p className="mt-1 text-sm text-ink-soft">{generationError}</p>
-              <button
-                type="button"
-                onClick={retryGeneration}
-                className="mt-4 rounded-full bg-ink px-5 py-1.5 text-sm font-semibold text-paper"
-              >
-                Try Again
-              </button>
+          {recipients.length === 0 ? (
+            <div className="rounded-2xl border border-border bg-card p-8 text-center">
+              <p className="font-medium text-ink">Nobody owes you anything from this bill.</p>
+              <p className="mt-1 text-sm text-ink-soft">Every item ended up assigned only to you.</p>
             </div>
-          )}
+          ) : (
+            <>
+              <p className="mb-6 text-sm text-ink-soft">
+                Pick who to send a reminder to, then approve. Once you approve and it sends, follow-up
+                reminders for that person continue automatically every {reminderIntervalMinutes} minute
+                {reminderIntervalMinutes === 1 ? "" : "s"} (test mode) — escalating in tone with no further
+                approval needed — until you mark the debt as paid.
+              </p>
+              <div className="space-y-4">
+                {recipients.map((r) => (
+                  <div key={r.debt.id} className="rounded-2xl border border-border bg-card p-5">
+                    <div className="mb-3 flex items-center justify-between">
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={r.selectedForSend}
+                          disabled={r.sent}
+                          onChange={() =>
+                            setRecipients((prev) =>
+                              prev.map((x) => (x.debt.id === r.debt.id ? { ...x, selectedForSend: !x.selectedForSend } : x))
+                            )
+                          }
+                        />
+                        <span className="font-medium text-ink">{r.debt.personName}</span>
+                      </label>
+                      <span className="font-display text-lg font-bold text-ink">{formatCurrency(r.debt.amount)}</span>
+                    </div>
 
-          {debt.message && !editingMessage && (
-            <div className="rounded-2xl border border-border bg-card p-6">
-              <div className="mb-4 flex items-center justify-between border-b border-border pb-4 text-sm">
-                <div>
-                  <p className="text-ink-faint">To</p>
-                  <p className="font-medium text-ink">
-                    {debt.personName}
-                    {people.find((p) => p.id === debt.personId) && (
-                      <span className="text-ink-faint"> @{people.find((p) => p.id === debt.personId)!.telegramUsername}</span>
+                    {r.debt.selectedItems && r.debt.selectedItems.length > 0 && (
+                      <p className="mb-2 text-xs text-ink-faint">For: {r.debt.selectedItems.map((i) => i.name).join(", ")}</p>
                     )}
-                  </p>
-                </div>
-                <div className="text-right">
-                  <p className="text-ink-faint">Amount</p>
-                  <p className="font-medium text-ink">{formatCurrency(debt.amount)}</p>
-                </div>
-              </div>
-              {debt.selectedItems && debt.selectedItems.length > 0 && (
-                <p className="mb-3 text-xs text-ink-faint">
-                  For: {debt.selectedItems.map((i) => i.name).join(", ")}
-                </p>
-              )}
-              <div className="mb-3 flex items-center justify-between">
-                <ToneBadge tone={debt.tone} />
-                {debt.messageEdited && <span className="text-xs text-ink-faint">edited by you</span>}
-              </div>
-              <p className="font-display text-lg leading-relaxed text-ink">"{debt.message}"</p>
-              {reasoning && <p className="mt-4 text-xs text-ink-faint">Why this tone: {reasoning}</p>}
-            </div>
-          )}
 
-          {editingMessage && (
-            <div className="rounded-2xl border border-border bg-card p-4">
-              <textarea
-                value={draftText}
-                onChange={(e) => setDraftText(e.target.value)}
-                rows={4}
-                className="w-full resize-none rounded-lg border border-border bg-paper p-3 text-ink outline-none focus:border-ink"
-              />
-              {editError && <p className="mt-2 text-sm text-[var(--color-danger)]">{editError}</p>}
-              <div className="mt-3 flex gap-2">
-                <button type="button" onClick={saveEditedMessage} className="rounded-full bg-ink px-4 py-1.5 text-sm font-semibold text-paper">
-                  Save edit
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingMessage(false);
-                    setDraftText(debt.message ?? "");
-                  }}
-                  className="text-sm font-medium text-ink-soft hover:text-ink"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
+                    {r.generating && !r.debt.message && <p className="text-sm text-ink-soft">Writing a reminder…</p>}
 
-          {/* Generation failure: "Try Again" only ever re-runs generation — never sends. Shown even
-              if an older message is still visible below, so it's never mistaken for a send error. */}
-          {generationError && debt.message && (
-            <div className="mt-4">
-              <ErrorBanner message={`Couldn't generate a new message: ${generationError}`} onRetry={retryGeneration} retryLabel="Try Again" />
-            </div>
-          )}
+                    {!r.debt.message && !r.generating && r.generationError && (
+                      <div className="rounded-xl border border-border bg-paper p-4 text-center">
+                        <p className="text-sm text-ink-soft">{r.generationError}</p>
+                        <button
+                          type="button"
+                          onClick={() => runGenerateFor(r.debt.id, undefined, false)}
+                          className="mt-2 rounded-full bg-ink px-4 py-1 text-xs font-semibold text-paper"
+                        >
+                          Try again
+                        </button>
+                      </div>
+                    )}
 
-          {/* Send failure: "Retry Send" only ever re-sends the SAME already-approved message — never regenerates. */}
-          {sendError && (
-            <div className="mt-4 space-y-2">
-              <ErrorBanner message={sendError.message} onRetry={handleSend} retryLabel="Retry Send" />
-              {sendError.notVerified && (
-                <p className="text-xs text-ink-faint">
-                  Once they've messaged the bot, click "Retry Send" again — no need to redo anything above.
-                </p>
-              )}
-            </div>
-          )}
+                    {r.debt.message && !r.editingMessage && (
+                      <div>
+                        <div className="mb-2 flex items-center gap-2">
+                          <ToneBadge tone={r.debt.tone} />
+                          {r.debt.messageEdited && <span className="text-xs text-ink-faint">edited by you</span>}
+                        </div>
+                        <p className="text-ink">"{r.debt.message}"</p>
+                      </div>
+                    )}
 
-          {debt.message && !editingMessage && (
-            <div className="mt-5 flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => runGenerate(debt.id, debt.tone ?? undefined, true)}
-                disabled={generating}
-                className="rounded-full border border-border px-4 py-1.5 text-sm font-medium text-ink hover:border-ink/40 disabled:opacity-40"
-              >
-                {generating ? "Regenerating…" : "Regenerate"}
-              </button>
-              <div className="flex items-center gap-1">
-                {TONES.map((tone) => (
-                  <button
-                    type="button"
-                    key={tone}
-                    onClick={() => runGenerate(debt.id, tone, false)}
-                    disabled={generating}
-                    className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
-                      debt.tone === tone ? "bg-ink text-paper" : "bg-ink/5 text-ink-soft hover:bg-ink/10"
-                    }`}
-                  >
-                    {tone}
-                  </button>
+                    {r.editingMessage && (
+                      <div>
+                        <textarea
+                          value={r.draftText}
+                          onChange={(e) =>
+                            setRecipients((prev) => prev.map((x) => (x.debt.id === r.debt.id ? { ...x, draftText: e.target.value } : x)))
+                          }
+                          rows={3}
+                          className="w-full resize-none rounded-lg border border-border bg-paper p-3 text-ink outline-none focus:border-ink"
+                        />
+                        {r.editError && <p className="mt-2 text-sm text-[var(--color-danger)]">{r.editError}</p>}
+                        <div className="mt-2 flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => saveEditedMessageFor(r.debt.id)}
+                            className="rounded-full bg-ink px-4 py-1.5 text-sm font-semibold text-paper"
+                          >
+                            Save edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setRecipients((prev) =>
+                                prev.map((x) => (x.debt.id === r.debt.id ? { ...x, editingMessage: false, draftText: x.debt.message ?? "" } : x))
+                              )
+                            }
+                            className="text-sm font-medium text-ink-soft hover:text-ink"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {r.debt.message && !r.editingMessage && (
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => runGenerateFor(r.debt.id, r.debt.tone ?? undefined, true)}
+                          disabled={r.generating}
+                          className="rounded-full border border-border px-3 py-1 text-xs font-medium text-ink hover:border-ink/40 disabled:opacity-40"
+                        >
+                          {r.generating ? "Regenerating…" : "Regenerate"}
+                        </button>
+                        <div className="flex items-center gap-1">
+                          {INITIAL_TONES.map((tone) => (
+                            <button
+                              type="button"
+                              key={tone}
+                              onClick={() => runGenerateFor(r.debt.id, tone, false)}
+                              disabled={r.generating}
+                              className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                                r.debt.tone === tone ? "bg-ink text-paper" : "bg-ink/5 text-ink-soft hover:bg-ink/10"
+                              }`}
+                            >
+                              {tone}
+                            </button>
+                          ))}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setRecipients((prev) =>
+                              prev.map((x) => (x.debt.id === r.debt.id ? { ...x, editingMessage: true, draftText: x.debt.message ?? "" } : x))
+                            )
+                          }
+                          className="rounded-full border border-border px-3 py-1 text-xs font-medium text-ink hover:border-ink/40"
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    )}
+
+                    {r.sendError && (
+                      <div className="mt-3 space-y-1">
+                        <ErrorBanner message={r.sendError.message} onRetry={() => sendOne(r.debt.id)} retryLabel="Retry Send" />
+                        {r.sendError.notVerified && (
+                          <p className="text-xs text-ink-faint">Once they've messaged the bot, retry sending — no need to redo anything above.</p>
+                        )}
+                      </div>
+                    )}
+
+                    {r.sent && (
+                      <p className="mt-3 text-sm font-medium text-[var(--color-success)]">
+                        Sent via Telegram. Automatic reminders will now continue every {reminderIntervalMinutes} minute
+                        {reminderIntervalMinutes === 1 ? "" : "s"} (test mode) until this is marked as paid.
+                      </p>
+                    )}
+                  </div>
                 ))}
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setDraftText(debt.message ?? "");
-                  setEditingMessage(true);
-                }}
-                className="rounded-full border border-border px-4 py-1.5 text-sm font-medium text-ink hover:border-ink/40"
-              >
-                Edit
-              </button>
-              <button
-                type="button"
-                onClick={handleSend}
-                disabled={sending}
-                className="ml-auto rounded-full bg-accent px-5 py-1.5 text-sm font-semibold text-white disabled:opacity-40"
-              >
-                {sending ? "Sending…" : "Send via Telegram"}
-              </button>
-            </div>
-          )}
-        </div>
-      )}
 
-      {step === "done" && sendResult && (
-        <div className="rounded-2xl border border-border bg-card p-8 text-center">
-          <p className="font-display text-xl font-bold text-ink">Sent!</p>
-          <p className="mx-auto mt-2 max-w-sm text-sm text-ink-soft">{sendResult.note}</p>
-          <div className="mt-6 flex justify-center gap-3">
-            <button onClick={() => navigate("/reminders")} className="rounded-full bg-ink px-5 py-2 text-sm font-semibold text-paper">
-              View reminders
-            </button>
+              <button
+                type="button"
+                onClick={sendSelected}
+                disabled={sendingAny || !canSendSelected}
+                className="mt-6 rounded-full bg-accent px-6 py-2.5 text-sm font-semibold text-white disabled:opacity-40"
+              >
+                {sendingAny ? "Sending…" : "Approve & schedule"}
+              </button>
+            </>
+          )}
+
+          <div className="mt-8 flex justify-start gap-3">
             <button onClick={() => navigate("/dashboard")} className="rounded-full border border-border px-5 py-2 text-sm font-medium text-ink">
               Back to dashboard
+            </button>
+            <button onClick={() => navigate("/reminders")} className="rounded-full bg-ink px-5 py-2 text-sm font-semibold text-paper">
+              View reminders
             </button>
           </div>
         </div>

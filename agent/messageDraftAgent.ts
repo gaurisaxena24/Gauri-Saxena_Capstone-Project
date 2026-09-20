@@ -7,13 +7,19 @@
  * action.
  */
 
-import { draftReminderMessage } from "../skills/messageDraftSkill.js";
+import { draftReminderMessage, draftThankYouMessage } from "../skills/messageDraftSkill.js";
 import type { GeneratedReminder, ReminderContext, Tone } from "../backend/ai/types.js";
 
 export function draftMessage(params: {
   context: ReminderContext;
   forcedTone?: Tone;
   previousMessage?: string;
+  escalationNote?: string;
 }): Promise<GeneratedReminder> {
   return draftReminderMessage(params);
+}
+
+/** The one-time "thanks for paying" message — see skills/messageDraftSkill.ts. */
+export function draftThankYou(context: ReminderContext): Promise<string> {
+  return draftThankYouMessage(context);
 }

@@ -4,7 +4,13 @@
  * or event that isn't a stored or directly-derived fact.
  */
 
-import { getRemindersForPerson, type Expense, type ExpenseDebt, type Person } from "../backend/database/database.js";
+import {
+  getRemindersForDebt,
+  getRemindersForPerson,
+  type Expense,
+  type ExpenseDebt,
+  type Person,
+} from "../backend/database/database.js";
 import { getDebtsByPerson, getExpenseById } from "./debtSkill.js";
 import { TONES, type ReminderContext, type Tone } from "../backend/ai/types.js";
 
@@ -35,15 +41,23 @@ export async function buildReminderContext(params: {
   debt: ExpenseDebt;
 }): Promise<ReminderContext> {
   const { person, expense, debt } = params;
-  const [allDebts, allReminders] = await Promise.all([
+  const [allDebts, allReminders, remindersForThisDebt] = await Promise.all([
     getDebtsByPerson(person.id),
     getRemindersForPerson(person.id),
+    getRemindersForDebt(debt.id),
   ]);
   const priorDebts = allDebts.filter((d) => d.id !== debt.id);
   // getRemindersForPerson orders newest-first, so this filter preserves that order — [0] is the
   // most recently sent reminder to this person, for anything but the debt being messaged about now.
   const priorReminders = allReminders.filter((r) => r.status === "SENT" && r.debt_id !== debt.id);
   const lastReminderTone = isTone(priorReminders[0]?.tone ?? null) ? (priorReminders[0].tone as Tone) : null;
+
+  // Same-debt history — deliberately the OPPOSITE filter from `priorReminders` above: this is what
+  // automatic escalation needs (see backend/ai/types.ts's `ReminderContext.history.remindersForThisDebt`
+  // doc comment for why the two must stay separate). getRemindersForDebt orders newest-first too, so
+  // [0] is the most recently sent reminder for this exact debt.
+  const sentForThisDebt = remindersForThisDebt.filter((r) => r.status === "SENT");
+  const lastToneForThisDebt = isTone(sentForThisDebt[0]?.tone ?? null) ? (sentForThisDebt[0].tone as Tone) : null;
 
   const otherOpenDebts = await Promise.all(
     priorDebts
@@ -87,6 +101,8 @@ export async function buildReminderContext(params: {
       daysOutstanding: daysBetween(new Date(debt.created_at), new Date()),
       lastReminderTone,
       otherOpenDebts,
+      remindersForThisDebt: sentForThisDebt.length,
+      lastToneForThisDebt,
     },
   };
 }

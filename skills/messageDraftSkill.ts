@@ -23,10 +23,13 @@ import { callGroqText } from "../backend/ai/groqClient.js";
 import {
   AiRequestError,
   REMINDER_SYSTEM_PROMPT,
+  THANK_YOU_SYSTEM_PROMPT,
   TONES,
   buildReminderPrompt,
+  buildThankYouPrompt,
   extractJson,
   normalizeGeneratedReminder,
+  normalizeGeneratedThankYou,
   type GeneratedReminder,
   type ReminderContext,
   type Tone,
@@ -69,6 +72,8 @@ export async function draftReminderMessage(params: {
   context: ReminderContext;
   forcedTone?: Tone;
   previousMessage?: string;
+  /** Set only for an automatic escalation follow-up — see skills/escalationSkill.ts. */
+  escalationNote?: string;
 }): Promise<GeneratedReminder> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -98,4 +103,34 @@ export async function draftReminderMessage(params: {
   throw lastError instanceof Error
     ? lastError
     : new AiRequestError("Couldn't generate the message. Please try again.");
+}
+
+/** The one-time "thanks for paying" message sent when a debt is marked paid — see backend/ai/types.ts's THANK_YOU_SYSTEM_PROMPT. */
+export async function draftThankYouMessage(context: ReminderContext): Promise<string> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const raw = await callGroqText({
+        system: THANK_YOU_SYSTEM_PROMPT,
+        prompt: buildThankYouPrompt(context),
+        maxTokens: 256,
+        reasoningEffort: "low",
+      });
+      return normalizeGeneratedThankYou(extractJson(raw));
+    } catch (error) {
+      lastError = error;
+      const rateLimitWait = rateLimitWaitMs(error);
+      if (rateLimitWait !== null) {
+        if (attempt < MAX_ATTEMPTS) await sleep(rateLimitWait);
+        continue;
+      }
+      if (!isJsonGenerationFailure(error)) throw error;
+    }
+  }
+  if (rateLimitWaitMs(lastError) !== null) {
+    throw new AiRequestError("Groq's rate limit is briefly maxed out — please wait a few seconds and try again.");
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new AiRequestError("Couldn't generate the thank-you message. Please try again.");
 }

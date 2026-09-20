@@ -126,11 +126,18 @@ export async function generateDraft(params: {
   context: ReminderContext;
   forcedTone?: Tone;
   regenerate?: boolean;
+  /** Set only by the automatic reminder scheduler for an escalating follow-up — see skills/escalationSkill.ts. */
+  escalationNote?: string;
 }) {
+  // Automatic escalation (escalationNote set) always needs the literal previous message too — see
+  // buildReminderPrompt's escalation-aware branch — not just a manual "Regenerate" click.
+  const previousMessage =
+    params.regenerate || params.escalationNote ? params.debt.message ?? undefined : undefined;
   const generated = await messageDraftAgent.draftMessage({
     context: params.context,
     forcedTone: params.forcedTone,
-    previousMessage: params.regenerate ? (params.debt.message ?? undefined) : undefined,
+    previousMessage,
+    escalationNote: params.escalationNote,
   });
   const updated = await debtAgent.saveDraftMessage(params.debt.id, {
     message: generated.message,
@@ -181,8 +188,45 @@ export async function sendReminder(debt: ExpenseDebt, person: Person) {
   }
 }
 
-export function markDebtPaid(debtId: number): Promise<ExpenseDebt | undefined> {
-  return debtAgent.markPaid(debtId, "PAID");
+/**
+ * Marking a debt paid does two things beyond the status update itself: it implicitly stops all
+ * future automatic reminders (backend/reminders/scheduler.ts only ever picks up debts still
+ * UNPAID, so no separate "cancel" step exists or is needed), and — only on a genuine UNPAID→PAID
+ * transition — sends one short thank-you message. Calling this on a debt that's already PAID (a
+ * repeat call, e.g. a duplicate button click) is a no-op with respect to messaging: the status is
+ * simply re-confirmed and no second thank-you is ever sent, since "already PAID before this call"
+ * is exactly the condition checked below.
+ */
+export async function markDebtPaid(debtId: number): Promise<ExpenseDebt | undefined> {
+  const before = await debtAgent.getDebt(debtId);
+  if (!before) return undefined;
+  const wasAlreadyPaid = before.status === "PAID";
+
+  const updated = await debtAgent.markPaid(debtId, "PAID");
+  if (!updated || wasAlreadyPaid) return updated;
+
+  try {
+    const person = await profileAgent.findPersonById(updated.person_id);
+    if (!person || !profileAgent.isTelegramVerified(person)) return updated; // nothing to send to
+    const expense = await debtAgent.getExpenseById(updated.expense_id);
+    if (!expense) return updated;
+
+    const context = await contextAgent.buildContext({ person, expense, debt: updated });
+    const message = await messageDraftAgent.draftThankYou(context);
+    const result = await telegramAgent.sendMessage(person, message);
+    await reminderAgent.logReminder({
+      debtId: updated.id,
+      personId: person.id,
+      message,
+      tone: null,
+      status: result.success ? "SENT" : "FAILED",
+      telegramMessageId: result.success ? result.telegramMessageId : undefined,
+    });
+  } catch (error) {
+    // The paid status change must succeed regardless of whether the thank-you could be sent.
+    console.error(`[debtCollectorAgent] Couldn't send the thank-you message for debt ${debtId}:`, error);
+  }
+  return updated;
 }
 
 /** Removes a debt ("send request") only — the person and expense it references are always left untouched. */
