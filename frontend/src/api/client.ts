@@ -74,6 +74,7 @@ export interface PersonSummary {
   telegramVerified: boolean;
   totalOwed: number;
   openDebts: number;
+  keepFormal: boolean;
 }
 
 export interface PersonDebtSummary {
@@ -111,6 +112,7 @@ export interface PersonDetail {
   verificationCode: string;
   debts: PersonDebtSummary[];
   reminders: ReminderSummary[];
+  keepFormal: boolean;
 }
 
 export const listPeople = () => request<{ people: PersonSummary[] }>("/people");
@@ -123,11 +125,12 @@ export const createPerson = (input: {
   relationship?: string;
   notes?: string;
   phoneNumber?: string;
+  keepFormal?: boolean;
 }) => request<PersonDetail>("/people", { method: "POST", body: json(input) });
 
 export const updatePerson = (
   id: number,
-  patch: Partial<{ name: string; relationship: string; notes: string; phoneNumber: string }>
+  patch: Partial<{ name: string; relationship: string; notes: string; phoneNumber: string; keepFormal: boolean }>
 ) => request<PersonDetail>(`/people/${id}`, { method: "PATCH", body: json(patch) });
 
 /** Removes this person only — never their expenses. */

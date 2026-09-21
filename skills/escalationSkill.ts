@@ -29,6 +29,13 @@
  * risk crossing into a real threat or harassment — which REMINDER_SYSTEM_PROMPT hard-bans even for
  * "Angry"/"Unhinged", and matters more here since nothing reviews these before they send. Holding at
  * the angriest-but-still-safe register is the deliberate ceiling, not a gap.
+ *
+ * A SECOND, lower ceiling applies whenever skills/formalitySkill.ts's `shouldStayFormal` is true for
+ * this person (professor, boss, client, senior, or a manual per-person override): escalation is
+ * capped at "Passive-Aggressive" and never reaches "Angry" at all, no matter how many follow-ups have
+ * already been sent. This is a hard, code-level cap, not just a prompt hint — relationship context
+ * is resolved before tone/escalation and constrains what escalation is allowed to pick, not the
+ * other way around.
  */
 
 import type { Tone } from "../backend/ai/types.js";
@@ -46,9 +53,26 @@ export interface EscalationStage {
  * @param remindersForThisDebt How many reminders have already been SENT for this exact debt
  * (0 = about to send the very first one — callers of this module should never actually hit that
  * case, since reminder 1 is always the manual, user-chosen-tone send).
+ * @param formal When true (skills/formalitySkill.ts's `shouldStayFormal`), caps escalation at
+ * "Passive-Aggressive" forever — this relationship's context overrides how far tone can escalate.
  */
-export function escalationForFollowUp(remindersForThisDebt: number): EscalationStage {
+export function escalationForFollowUp(remindersForThisDebt: number, formal: boolean): EscalationStage {
   const upcomingReminderNumber = remindersForThisDebt + 1;
+
+  if (formal) {
+    return {
+      tone: "Passive-Aggressive",
+      stage: remindersForThisDebt <= 1 ? 2 : 3,
+      note:
+        `This is automatic follow-up #${upcomingReminderNumber} for this exact debt, generated and sent with ` +
+        "no human review. This person's relationship context (professor, boss, client, senior, or " +
+        "similar) OVERRIDES normal escalation: no matter how many times this exact debt has already " +
+        "been reminded about, this must stay restrained, professional, and respectful — direct and " +
+        "firmer about wanting payment than a first reminder, but never blunt, casual, sarcastic, or " +
+        "angry. Do not let repetition make this sound informal or irritated; hold the same restrained " +
+        "register every time.",
+    };
+  }
 
   if (remindersForThisDebt <= 1) {
     return {

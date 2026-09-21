@@ -165,6 +165,10 @@ function ensureSchema(): Promise<void> {
     );
     await db.query(`ALTER TABLE people ADD COLUMN IF NOT EXISTS verification_code TEXT`);
     await backfillVerificationCodes(db);
+    // Manual override: when true, forces restrained/formal treatment (see skills/formalitySkill.ts)
+    // regardless of what `relationship` says or how an automatic reminder would otherwise escalate.
+    // Defaults to 0 (not set) so existing rows fall back to relationship-keyword auto-detection.
+    await db.query(`ALTER TABLE people ADD COLUMN IF NOT EXISTS keep_formal INTEGER NOT NULL DEFAULT 0`);
 
     // How much of the expense this debt covers, plus optional context the user
     // supplies when creating it — both feed the AI reminder's social context.
@@ -241,6 +245,7 @@ export interface Person {
   telegram_verified: number;
   verification_code: string;
   created_at: string;
+  keep_formal: number;
 }
 
 export interface PersonWithStats extends Person {
@@ -254,13 +259,14 @@ export async function createPerson(input: {
   relationship?: string;
   notes?: string;
   phoneNumber?: string;
+  keepFormal?: boolean;
 }): Promise<Person> {
   const database = await getDb();
   const created_at = new Date().toISOString();
   const username = normalizeUsername(input.telegramUsername);
   const { rows } = await database.query<{ id: number }>(
-    `INSERT INTO people (name, telegram_username, relationship, notes, phone_number, telegram_verified, verification_code, created_at)
-     VALUES ($1, $2, $3, $4, $5, 0, $6, $7) RETURNING id`,
+    `INSERT INTO people (name, telegram_username, relationship, notes, phone_number, telegram_verified, verification_code, created_at, keep_formal)
+     VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8) RETURNING id`,
     [
       input.name,
       username,
@@ -269,6 +275,7 @@ export async function createPerson(input: {
       input.phoneNumber ?? null,
       generateVerificationCode(),
       created_at,
+      input.keepFormal ? 1 : 0,
     ]
   );
   return (await getPerson(rows[0].id))!;
@@ -276,7 +283,13 @@ export async function createPerson(input: {
 
 export async function updatePerson(
   id: number,
-  patch: Partial<{ name: string; relationship: string | null; notes: string | null; phoneNumber: string | null }>
+  patch: Partial<{
+    name: string;
+    relationship: string | null;
+    notes: string | null;
+    phoneNumber: string | null;
+    keepFormal: boolean;
+  }>
 ): Promise<Person | undefined> {
   const database = await getDb();
   const current = await getPerson(id);
@@ -286,14 +299,12 @@ export async function updatePerson(
     relationship: patch.relationship !== undefined ? patch.relationship : current.relationship,
     notes: patch.notes !== undefined ? patch.notes : current.notes,
     phone_number: patch.phoneNumber !== undefined ? patch.phoneNumber : current.phone_number,
+    keep_formal: patch.keepFormal !== undefined ? (patch.keepFormal ? 1 : 0) : current.keep_formal,
   };
-  await database.query(`UPDATE people SET name = $1, relationship = $2, notes = $3, phone_number = $4 WHERE id = $5`, [
-    next.name,
-    next.relationship,
-    next.notes,
-    next.phone_number,
-    id,
-  ]);
+  await database.query(
+    `UPDATE people SET name = $1, relationship = $2, notes = $3, phone_number = $4, keep_formal = $5 WHERE id = $6`,
+    [next.name, next.relationship, next.notes, next.phone_number, next.keep_formal, id]
+  );
   return getPerson(id);
 }
 

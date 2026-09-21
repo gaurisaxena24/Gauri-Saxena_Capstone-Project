@@ -29,6 +29,7 @@ import * as contextAgent from "../../agent/contextAgent.js";
 import * as profileSkill from "../../skills/profileSkill.js";
 import * as debtSkill from "../../skills/debtSkill.js";
 import { escalationForFollowUp } from "../../skills/escalationSkill.js";
+import { shouldStayFormal } from "../../skills/formalitySkill.js";
 import { getDebtsDueForAutomaticFollowUp, type ExpenseDebt } from "../database/database.js";
 import { getReminderIntervalMinutes } from "./schedulerConfig.js";
 
@@ -55,7 +56,7 @@ async function processDebt(debtId: number): Promise<void> {
     // history.remindersForThisDebt/lastToneForThisDebt reflect every reminder sent so far,
     // including ones this scheduler itself already sent on earlier ticks.
     const context = await contextAgent.buildContext({ person, expense, debt });
-    const escalation = escalationForFollowUp(context.history.remindersForThisDebt);
+    const escalation = escalationForFollowUp(context.history.remindersForThisDebt, shouldStayFormal(person));
 
     // Persist the refreshed context too, so DebtDetail's "AI context used" panel stays accurate
     // for a debt that's been sitting in automatic mode for a while, exactly like the one-time
