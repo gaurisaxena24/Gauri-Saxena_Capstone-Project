@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, getDebt, getHealth, markDebtPaid, removeDebt, type DebtDetail as DebtDetailData } from "../api/client";
-import { formatCurrency, formatDate } from "../lib/format";
+import { formatCurrency, formatDate, formatDateTime } from "../lib/format";
 import { StatusBadge } from "../components/StatusBadge";
 import { ToneBadge } from "../components/ToneBadge";
 import { ErrorBanner } from "../components/ErrorBanner";
@@ -176,7 +176,7 @@ export function DebtDetail() {
                 <span className={r.status === "SENT" ? "text-[var(--color-success)]" : "text-[var(--color-danger)]"}>
                   {r.status === "SENT" ? "Sent" : "Failed"}
                 </span>
-                <span className="text-ink-faint">{formatDate(r.sentAt ?? r.createdAt)}</span>
+                <span className="text-ink-faint">{formatDateTime(r.sentAt ?? r.createdAt)}</span>
               </div>
             ))}
           </div>

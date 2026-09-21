@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { listReminders, type ReminderSummary } from "../api/client";
-import { formatDate } from "../lib/format";
+import { formatDateTime } from "../lib/format";
 import { ToneBadge } from "../components/ToneBadge";
 import { ErrorBanner } from "../components/ErrorBanner";
 
@@ -51,7 +51,12 @@ export function Reminders() {
               </div>
             </div>
             <p className="text-sm text-ink-soft">"{r.message}"</p>
-            <p className="mt-1 text-xs text-ink-faint">{formatDate(r.sentAt ?? r.createdAt)}</p>
+            <p className="mt-1 text-xs text-ink-faint">
+              {r.status === "SENT" ? "Sent" : "Attempted"}: {formatDateTime(r.sentAt ?? r.createdAt)}
+            </p>
+            {r.status === "SENT" && r.sentAt && r.sentAt !== r.createdAt && (
+              <p className="text-xs text-ink-faint">Created: {formatDateTime(r.createdAt)}</p>
+            )}
           </Link>
         ))}
       </div>
