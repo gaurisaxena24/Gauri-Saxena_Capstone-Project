@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { getExpense, removeExpense, type Expense } from "../api/client";
+import { getExpense, removeExpense, type Expense, type ExpenseDebtLink } from "../api/client";
 import { formatCurrency, formatDate } from "../lib/format";
 import { ErrorBanner } from "../components/ErrorBanner";
 
@@ -12,7 +12,7 @@ const SOURCE_LABEL: Record<Expense["source"], string> = {
 export function ExpenseDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const [expense, setExpense] = useState<(Expense & { debtIds: number[] }) | null>(null);
+  const [expense, setExpense] = useState<(Expense & { debts: ExpenseDebtLink[] }) | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [noteExpanded, setNoteExpanded] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -29,10 +29,10 @@ export function ExpenseDetail() {
   async function handleRemove() {
     if (!expense) return;
     const label = expense.merchant ?? expense.category ?? "this expense";
-    if (expense.debtIds.length > 0) {
+    if (expense.debts.length > 0) {
       window.alert(
-        `This expense still has ${expense.debtIds.length} debt(s) drafted from it. Remove ${
-          expense.debtIds.length === 1 ? "it" : "them"
+        `This expense still has ${expense.debts.length} debt(s) drafted from it. Remove ${
+          expense.debts.length === 1 ? "it" : "them"
         } first (below), then you can delete this expense.`
       );
       return;
@@ -159,19 +159,25 @@ export function ExpenseDetail() {
         </div>
       )}
 
-      {expense.debtIds.length > 0 && (
+      {expense.debts.length > 0 && (
         <div className="mt-4">
           <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-ink-soft">Debts from this expense</h2>
           <div className="space-y-2">
-            {expense.debtIds.map((debtId) => (
-              <Link
-                key={debtId}
-                to={`/debts/${debtId}`}
-                className="block rounded-xl border border-border bg-card p-3 text-sm text-ink transition-colors hover:border-ink/30"
-              >
-                View debt #{debtId}
-              </Link>
-            ))}
+            {expense.debts.map((debt) =>
+              debt.personId ? (
+                <Link
+                  key={debt.id}
+                  to={`/people/${debt.personId}`}
+                  className="block rounded-xl border border-border bg-card p-3 text-sm text-ink transition-colors hover:border-ink/30"
+                >
+                  {debt.personName ?? "Unknown person"}
+                </Link>
+              ) : (
+                <div key={debt.id} className="block rounded-xl border border-border bg-card p-3 text-sm text-ink-soft">
+                  {debt.personName ?? "Unknown person"}
+                </div>
+              )
+            )}
           </div>
         </div>
       )}

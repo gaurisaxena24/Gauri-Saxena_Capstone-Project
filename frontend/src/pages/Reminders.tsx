@@ -31,34 +31,45 @@ export function Reminders() {
       )}
 
       <div className="space-y-3">
-        {reminders?.map((r) => (
-          <Link
-            key={r.id}
-            to={`/debts/${r.debtId}`}
-            className="block rounded-2xl border border-border bg-card p-4 hover:border-ink/30"
-          >
-            <div className="mb-2 flex items-center justify-between">
-              <p className="font-medium text-ink">{r.personName ?? "Unknown"}</p>
-              <div className="flex items-center gap-2">
-                <ToneBadge tone={r.tone} />
-                <span
-                  className={`text-xs font-medium ${
-                    r.status === "SENT" ? "text-[var(--color-success)]" : "text-[var(--color-danger)]"
-                  }`}
-                >
-                  {r.status === "SENT" ? "Sent" : "Failed"}
-                </span>
+        {reminders?.map((r) => {
+          const content = (
+            <>
+              <div className="mb-2 flex items-center justify-between">
+                <p className="font-medium text-ink">{r.personName ?? "Unknown"}</p>
+                <div className="flex items-center gap-2">
+                  <ToneBadge tone={r.tone} />
+                  <span
+                    className={`text-xs font-medium ${
+                      r.status === "SENT" ? "text-[var(--color-success)]" : "text-[var(--color-danger)]"
+                    }`}
+                  >
+                    {r.status === "SENT" ? "Sent" : "Failed"}
+                  </span>
+                </div>
               </div>
+              <p className="text-sm text-ink-soft">"{r.message}"</p>
+              <p className="mt-1 text-xs text-ink-faint">
+                {r.status === "SENT" ? "Sent" : "Attempted"}: {formatDateTime(r.sentAt ?? r.createdAt)}
+              </p>
+              {r.status === "SENT" && r.sentAt && r.sentAt !== r.createdAt && (
+                <p className="text-xs text-ink-faint">Created: {formatDateTime(r.createdAt)}</p>
+              )}
+            </>
+          );
+          return r.personId ? (
+            <Link
+              key={r.id}
+              to={`/people/${r.personId}`}
+              className="block rounded-2xl border border-border bg-card p-4 hover:border-ink/30"
+            >
+              {content}
+            </Link>
+          ) : (
+            <div key={r.id} className="rounded-2xl border border-border bg-card p-4">
+              {content}
             </div>
-            <p className="text-sm text-ink-soft">"{r.message}"</p>
-            <p className="mt-1 text-xs text-ink-faint">
-              {r.status === "SENT" ? "Sent" : "Attempted"}: {formatDateTime(r.sentAt ?? r.createdAt)}
-            </p>
-            {r.status === "SENT" && r.sentAt && r.sentAt !== r.createdAt && (
-              <p className="text-xs text-ink-faint">Created: {formatDateTime(r.createdAt)}</p>
-            )}
-          </Link>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

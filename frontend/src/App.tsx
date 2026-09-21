@@ -9,8 +9,6 @@ import { People } from "./pages/People";
 import { PersonDetail } from "./pages/PersonDetail";
 import { Expenses } from "./pages/Expenses";
 import { ExpenseDetail } from "./pages/ExpenseDetail";
-import { Debts } from "./pages/Debts";
-import { DebtDetail } from "./pages/DebtDetail";
 import { Reminders } from "./pages/Reminders";
 
 function RequireAuth({ children }: { children: ReactElement }) {
@@ -40,8 +38,6 @@ function AppRoutes() {
         <Route path="/people/:id" element={<PersonDetail />} />
         <Route path="/expenses" element={<Expenses />} />
         <Route path="/expenses/:id" element={<ExpenseDetail />} />
-        <Route path="/debts" element={<Debts />} />
-        <Route path="/debts/:id" element={<DebtDetail />} />
         <Route path="/reminders" element={<Reminders />} />
       </Route>
       <Route path="*" element={<Navigate to={user ? "/dashboard" : "/login"} replace />} />
