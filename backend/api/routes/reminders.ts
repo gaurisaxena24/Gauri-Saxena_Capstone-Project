@@ -12,9 +12,6 @@ remindersRouter.get("/", async (_req, res) => {
       return {
         id: r.id,
         debtId: r.debt_id,
-        // No standalone debt page exists any more — the frontend links this to the person's
-        // profile page instead, which already lists their debt/reminder history.
-        personId: person ? r.person_id : null,
         personName: person?.name ?? null,
         message: r.message,
         tone: r.tone,

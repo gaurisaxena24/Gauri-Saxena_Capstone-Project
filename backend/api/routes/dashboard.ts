@@ -12,9 +12,6 @@ async function toRecentDebt(debt: ExpenseDebt) {
   ]);
   return {
     id: debt.id,
-    // No standalone debt page exists any more — the frontend links this row to the person's
-    // profile page instead, which already lists this debt in their debt history.
-    personId: person ? debt.person_id : null,
     personName: person?.name ?? null,
     amount: debt.amount,
     status: debt.status,

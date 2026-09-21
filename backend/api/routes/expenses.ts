@@ -3,7 +3,6 @@ import { readFile, unlink } from "node:fs/promises";
 import { extname } from "node:path";
 import * as agent from "../../../agent/debtCollectorAgent.js";
 import * as debtSkill from "../../../skills/debtSkill.js";
-import * as profileSkill from "../../../skills/profileSkill.js";
 import { isGroqConfigured } from "../../ai/groqClient.js";
 import { AiNotConfiguredError, AiRequestError } from "../../ai/types.js";
 import { uploadImage, uploadPathToUrl } from "../uploads.js";
@@ -140,15 +139,7 @@ expensesRouter.get("/:id", async (req, res) => {
     return;
   }
   const debts = await debtSkill.getDebtsByExpense(expense.id);
-  // No standalone debt page exists any more — each entry links to the person's profile page
-  // instead, which already lists this debt in their debt history.
-  const debtSummaries = await Promise.all(
-    debts.map(async (d) => {
-      const person = await profileSkill.findPersonById(d.person_id);
-      return { id: d.id, personId: person ? d.person_id : null, personName: person?.name ?? null };
-    })
-  );
-  res.json({ ...toExpensePayload(expense), debts: debtSummaries });
+  res.json({ ...toExpensePayload(expense), debtIds: debts.map((d) => d.id) });
 });
 
 expensesRouter.patch("/:id", async (req, res) => {

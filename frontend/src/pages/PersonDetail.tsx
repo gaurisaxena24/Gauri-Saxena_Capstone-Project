@@ -209,7 +209,7 @@ export function PersonDetail() {
           {person.debts.map((debt) => (
             <Link
               key={debt.id}
-              to={`/expenses/${debt.expenseId}`}
+              to={`/debts/${debt.id}`}
               className="flex items-center justify-between rounded-2xl border border-border bg-card p-4 hover:border-ink/30"
             >
               <div>

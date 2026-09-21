@@ -91,7 +91,6 @@ export interface PersonDebtSummary {
 export interface ReminderSummary {
   id: number;
   debtId: number;
-  personId: number | null;
   personName: string | null;
   message: string;
   tone: string | null;
@@ -195,13 +194,7 @@ export const extractExpenseFromImage = (file: File) => {
 export const updateExpense = (id: number, patch: Partial<Omit<Expense, "id" | "imageUrl" | "source">>) =>
   request<Expense>(`/expenses/${id}`, { method: "PATCH", body: json(patch) });
 
-export interface ExpenseDebtLink {
-  id: number;
-  personId: number | null;
-  personName: string | null;
-}
-
-export const getExpense = (id: number) => request<Expense & { debts: ExpenseDebtLink[] }>(`/expenses/${id}`);
+export const getExpense = (id: number) => request<Expense & { debtIds: number[] }>(`/expenses/${id}`);
 
 export const listExpenses = () => request<{ expenses: Expense[] }>("/expenses");
 
@@ -310,7 +303,6 @@ export interface DashboardData {
   stats: { totalOwed: number; peopleOwing: number; remindersSent: number };
   recent: Array<{
     id: number;
-    personId: number | null;
     personName: string | null;
     amount: number;
     status: "UNPAID" | "PAID";
