@@ -157,7 +157,20 @@ async function toExpenseDebtDetail(debt: ExpenseDebt) {
     messageEdited: Boolean(debt.message_edited),
     createdAt: debt.created_at,
     paidAt: debt.paid_at,
-    reminders,
+    // reminderSkill.historyForDebt returns raw DB rows (snake_case) — mapped to match the same
+    // camelCase shape GET /reminders already returns, which the frontend's ReminderSummary expects.
+    reminders: reminders.map((r) => ({
+      id: r.id,
+      debtId: r.debt_id,
+      personId: debt.person_id,
+      personName: person?.name ?? null,
+      message: r.message,
+      tone: r.tone,
+      status: r.status,
+      createdAt: r.created_at,
+      sentAt: r.sent_at,
+      telegramMessageId: r.telegram_message_id,
+    })),
   };
 }
 
