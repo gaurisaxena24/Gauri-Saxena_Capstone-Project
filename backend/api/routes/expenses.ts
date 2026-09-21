@@ -3,10 +3,12 @@ import { readFile, unlink } from "node:fs/promises";
 import { extname } from "node:path";
 import * as agent from "../../../agent/debtCollectorAgent.js";
 import * as debtSkill from "../../../skills/debtSkill.js";
+import * as profileSkill from "../../../skills/profileSkill.js";
+import * as reminderSkill from "../../../skills/reminderSkill.js";
 import { isGroqConfigured } from "../../ai/groqClient.js";
 import { AiNotConfiguredError, AiRequestError } from "../../ai/types.js";
 import { uploadImage, uploadPathToUrl } from "../uploads.js";
-import type { Expense } from "../../database/database.js";
+import type { Expense, ExpenseDebt } from "../../database/database.js";
 
 export const expensesRouter = Router();
 
@@ -132,6 +134,33 @@ expensesRouter.get("/", async (_req, res) => {
   res.json({ expenses: expenses.map((e) => toExpensePayload(e)) });
 });
 
+/**
+ * Full inline detail for each person/debt this expense was split into — there is no standalone
+ * debt page any more (see Expenses.tsx, which renders this nested directly under its expense
+ * instead of navigating anywhere): amount, paid/unpaid status, the generated reminder message, and
+ * the full send history all live here, one level down from the expense they belong to.
+ */
+async function toExpenseDebtDetail(debt: ExpenseDebt) {
+  const [person, reminders] = await Promise.all([
+    profileSkill.findPersonById(debt.person_id),
+    reminderSkill.historyForDebt(debt.id),
+  ]);
+  return {
+    id: debt.id,
+    personId: person ? debt.person_id : null,
+    personName: person?.name ?? null,
+    amount: debt.amount,
+    currency: debt.currency,
+    status: debt.status,
+    message: debt.message,
+    tone: debt.tone,
+    messageEdited: Boolean(debt.message_edited),
+    createdAt: debt.created_at,
+    paidAt: debt.paid_at,
+    reminders,
+  };
+}
+
 expensesRouter.get("/:id", async (req, res) => {
   const expense = await debtSkill.getExpenseById(Number(req.params.id));
   if (!expense) {
@@ -139,7 +168,7 @@ expensesRouter.get("/:id", async (req, res) => {
     return;
   }
   const debts = await debtSkill.getDebtsByExpense(expense.id);
-  res.json({ ...toExpensePayload(expense), debtIds: debts.map((d) => d.id) });
+  res.json({ ...toExpensePayload(expense), debts: await Promise.all(debts.map(toExpenseDebtDetail)) });
 });
 
 expensesRouter.patch("/:id", async (req, res) => {

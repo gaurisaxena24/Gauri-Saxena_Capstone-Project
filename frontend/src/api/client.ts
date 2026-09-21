@@ -91,6 +91,7 @@ export interface PersonDebtSummary {
 export interface ReminderSummary {
   id: number;
   debtId: number;
+  personId: number | null;
   personName: string | null;
   message: string;
   tone: string | null;
@@ -194,7 +195,27 @@ export const extractExpenseFromImage = (file: File) => {
 export const updateExpense = (id: number, patch: Partial<Omit<Expense, "id" | "imageUrl" | "source">>) =>
   request<Expense>(`/expenses/${id}`, { method: "PATCH", body: json(patch) });
 
-export const getExpense = (id: number) => request<Expense & { debtIds: number[] }>(`/expenses/${id}`);
+/**
+ * Full inline detail for each person/debt an expense was split into — there is no standalone debt
+ * page; this is everything the Expenses page needs to render nested under its expense: amount,
+ * paid/unpaid status, the generated reminder message, and the full send history.
+ */
+export interface ExpenseDebtDetail {
+  id: number;
+  personId: number | null;
+  personName: string | null;
+  amount: number;
+  currency: string | null;
+  status: "UNPAID" | "PAID";
+  message: string | null;
+  tone: string | null;
+  messageEdited: boolean;
+  createdAt: string;
+  paidAt: string | null;
+  reminders: ReminderSummary[];
+}
+
+export const getExpense = (id: number) => request<Expense & { debts: ExpenseDebtDetail[] }>(`/expenses/${id}`);
 
 export const listExpenses = () => request<{ expenses: Expense[] }>("/expenses");
 
@@ -204,33 +225,6 @@ export const removeExpense = (id: number) => request<void>(`/expenses/${id}`, { 
 // ---- Debts -----------------------------------------------------------------
 
 export type ShareMode = "FULL" | "HALF" | "CUSTOM";
-
-export interface ReminderContext {
-  person: { name: string; telegramUsername: string; relationship: string; description: string | null };
-  debt: {
-    amount: number;
-    expenseTotal: number;
-    currency: string;
-    date: string | null;
-    category: string | null;
-    reason: string;
-    shareMode: ShareMode;
-    additionalContext: string | null;
-    desiredAction: string | null;
-    items: Array<{ name: string; amount: number }> | null;
-  };
-  history: {
-    previousDebts: number;
-    previousReminders: number;
-    previousPaidDebts: number;
-    daysOutstanding: number;
-    lastReminderTone: string | null;
-    otherOpenDebts: Array<{ amount: number; reason: string; daysOutstanding: number }>;
-    /** How many reminders have already been sent for THIS exact debt (0 = first reminder only). */
-    remindersForThisDebt: number;
-    lastToneForThisDebt: string | null;
-  };
-}
 
 export interface DebtSummary {
   id: number;
@@ -282,27 +276,13 @@ export const markDebtPaid = (debtId: number) => request<DebtSummary>(`/debts/${d
 /** Removes this debt ("send request") only — never the person or expense it references. */
 export const removeDebt = (debtId: number) => request<void>(`/debts/${debtId}`, { method: "DELETE" });
 
-export interface DebtDetail extends DebtSummary {
-  context: ReminderContext | null;
-  expense: Expense | null;
-  person: { id: number; name: string; telegramUsername: string; relationship: string | null; notes: string | null } | null;
-  reminders: ReminderSummary[];
-}
-
-export const getDebt = (id: number) => request<DebtDetail>(`/debts/${id}`);
-
-export const listDebts = () => request<{ debts: DebtSummary[] }>("/debts");
-
-// ---- Reminders -----------------------------------------------------------------
-
-export const listReminders = () => request<{ reminders: ReminderSummary[] }>("/reminders");
-
 // ---- Dashboard -----------------------------------------------------------------
 
 export interface DashboardData {
   stats: { totalOwed: number; peopleOwing: number; remindersSent: number };
   recent: Array<{
     id: number;
+    personId: number | null;
     personName: string | null;
     amount: number;
     status: "UNPAID" | "PAID";

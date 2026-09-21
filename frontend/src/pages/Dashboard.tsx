@@ -70,9 +70,13 @@ export function Dashboard() {
                     {data.recent.map((debt) => (
                       <tr key={debt.id} className="border-b border-border last:border-0 hover:bg-ink/[0.02]">
                         <td className="px-4 py-3">
-                          <Link to={`/debts/${debt.id}`} className="font-medium text-ink hover:text-accent">
-                            {debt.personName}
-                          </Link>
+                          {debt.personId ? (
+                            <Link to={`/people/${debt.personId}`} className="font-medium text-ink hover:text-accent">
+                              {debt.personName}
+                            </Link>
+                          ) : (
+                            <span className="font-medium text-ink">{debt.personName ?? "Unknown"}</span>
+                          )}
                         </td>
                         <td className="px-4 py-3">{formatCurrency(debt.amount)}</td>
                         <td className="px-4 py-3">
