@@ -31,12 +31,6 @@ export function Dashboard() {
     <div className="space-y-8">
       <div className="flex items-center justify-between">
         <h1 className="font-display text-2xl font-bold text-ink">Dashboard</h1>
-        <Link
-          to="/add-expense"
-          className="rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-transform hover:scale-[1.02]"
-        >
-          + Add Expense
-        </Link>
       </div>
 
       {error && <ErrorBanner message={error} onRetry={load} />}
