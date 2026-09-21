@@ -1318,8 +1318,8 @@ export function AddExpenseFlow() {
             <button onClick={() => navigate("/dashboard")} className="rounded-full border border-border px-5 py-2 text-sm font-medium text-ink">
               Back to dashboard
             </button>
-            <button onClick={() => navigate("/reminders")} className="rounded-full bg-ink px-5 py-2 text-sm font-semibold text-paper">
-              View reminders
+            <button onClick={() => navigate("/expenses")} className="rounded-full bg-ink px-5 py-2 text-sm font-semibold text-paper">
+              View expenses
             </button>
           </div>
         </div>

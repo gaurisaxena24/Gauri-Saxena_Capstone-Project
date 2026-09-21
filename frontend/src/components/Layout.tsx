@@ -5,7 +5,6 @@ const NAV_ITEMS = [
   { to: "/dashboard", label: "Dashboard" },
   { to: "/people", label: "People" },
   { to: "/expenses", label: "Expenses" },
-  { to: "/reminders", label: "Reminders" },
 ];
 
 export function Layout() {
