@@ -37,6 +37,12 @@ export function Layout() {
 
           <div className="flex items-center gap-3">
             <NavLink
+              to="/people?add=1"
+              className="rounded-full bg-accent px-3.5 py-1.5 text-sm font-semibold text-white"
+            >
+              + Add People
+            </NavLink>
+            <NavLink
               to="/add-expense"
               className="rounded-full bg-accent px-3.5 py-1.5 text-sm font-semibold text-white"
             >
