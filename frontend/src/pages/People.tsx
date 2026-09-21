@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   createPerson,
   getHealth,
@@ -20,9 +20,12 @@ function buildInstructionsText(botUsername: string | null, code: string): string
 }
 
 export function People() {
+  const [searchParams] = useSearchParams();
   const [people, setPeople] = useState<PersonSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
+  // The header's "+ Add People" button links here with ?add=1 to open this same existing
+  // add-person form immediately, rather than landing on the plain list.
+  const [adding, setAdding] = useState(searchParams.get("add") === "1");
   const [removingId, setRemovingId] = useState<number | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [name, setName] = useState("");
