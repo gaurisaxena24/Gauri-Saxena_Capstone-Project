@@ -18,6 +18,7 @@ function toPersonSummary(p: PersonWithStats) {
     telegramVerified: Boolean(p.telegram_verified),
     totalOwed: p.total_owed,
     openDebts: p.open_debts,
+    keepFormal: Boolean(p.keep_formal),
   };
 }
 
@@ -32,6 +33,7 @@ function toPersonPayload(p: Person) {
     telegramVerified: Boolean(p.telegram_verified),
     telegramChatId: p.telegram_chat_id,
     verificationCode: p.verification_code,
+    keepFormal: Boolean(p.keep_formal),
   };
 }
 
@@ -41,7 +43,7 @@ peopleRouter.get("/", async (_req, res) => {
 });
 
 peopleRouter.post("/", async (req, res) => {
-  const { name, telegramUsername, relationship, notes, phoneNumber } = req.body ?? {};
+  const { name, telegramUsername, relationship, notes, phoneNumber, keepFormal } = req.body ?? {};
   if (!name?.trim() || !telegramUsername?.trim()) {
     res.status(400).json({ error: "Name and Telegram username are required." });
     return;
@@ -54,6 +56,7 @@ peopleRouter.post("/", async (req, res) => {
       relationship: relationship?.trim() || undefined,
       notes: notes?.trim() || undefined,
       phoneNumber: phoneNumber?.trim() || undefined,
+      keepFormal: Boolean(keepFormal),
     });
     res.status(201).json(toPersonPayload(person));
   } catch (error) {
@@ -153,12 +156,13 @@ peopleRouter.post("/:id/verify-manually", async (req, res) => {
 
 peopleRouter.patch("/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const { name, relationship, notes, phoneNumber } = req.body ?? {};
+  const { name, relationship, notes, phoneNumber, keepFormal } = req.body ?? {};
   const updated = await profileSkill.editPerson(id, {
     name: name !== undefined ? name : undefined,
     relationship: relationship !== undefined ? relationship : undefined,
     notes: notes !== undefined ? notes : undefined,
     phoneNumber: phoneNumber !== undefined ? phoneNumber : undefined,
+    keepFormal: keepFormal !== undefined ? Boolean(keepFormal) : undefined,
   });
   if (!updated) {
     res.status(404).json({ error: "Person not found." });

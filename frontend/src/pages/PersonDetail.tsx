@@ -11,7 +11,13 @@ export function PersonDetail() {
   const [person, setPerson] = useState<PersonDetailData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
-  const [editFields, setEditFields] = useState({ name: "", relationship: "", notes: "", phoneNumber: "" });
+  const [editFields, setEditFields] = useState({
+    name: "",
+    relationship: "",
+    notes: "",
+    phoneNumber: "",
+    keepFormal: false,
+  });
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -26,6 +32,7 @@ export function PersonDetail() {
           relationship: data.relationship ?? "",
           notes: data.notes ?? "",
           phoneNumber: data.phoneNumber ?? "",
+          keepFormal: data.keepFormal,
         });
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Couldn't load this person."));
@@ -99,6 +106,7 @@ export function PersonDetail() {
             <p className="text-sm text-ink-faint">
               @{person.telegramUsername} · {person.relationship ?? "no relationship set"}
               {person.phoneNumber && <> · {person.phoneNumber}</>}
+              {person.keepFormal && <> · restrained/formal reminders</>}
             </p>
             {person.notes && <p className="mt-2 text-sm text-ink-soft">{person.notes}</p>}
           </div>
@@ -120,6 +128,22 @@ export function PersonDetail() {
               value={editFields.notes}
               onChange={(v) => setEditFields({ ...editFields, notes: v })}
             />
+            <label className="flex items-start gap-2 text-sm text-ink">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={editFields.keepFormal}
+                onChange={(e) => setEditFields({ ...editFields, keepFormal: e.target.checked })}
+              />
+              <span>
+                Keep reminders restrained/formal for this person
+                <span className="block text-xs text-ink-faint">
+                  Overrides relationship-based auto-detection (e.g. "professor", "boss") — turn this on to force
+                  it, regardless of what Relationship says. Automatic follow-ups will never escalate to a blunt
+                  or angry tone for this person.
+                </span>
+              </span>
+            </label>
             <div className="flex gap-2">
               <button onClick={saveEdits} disabled={saving} className="rounded-full bg-ink px-4 py-1.5 text-sm font-semibold text-paper">
                 {saving ? "Saving…" : "Save"}

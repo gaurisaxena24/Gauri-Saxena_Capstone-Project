@@ -42,6 +42,13 @@ export interface ReminderContext {
     relationship: string;
     /** Who they are / their personality / how they handle money — shapes HOW the message is written, not just facts it states. */
     description: string | null;
+    /**
+     * True when skills/formalitySkill.ts's `shouldStayFormal` resolved true for this person (a
+     * manual per-person override, or an auto-detected formal relationship like professor/boss/
+     * client/senior). This is a HARD signal, not a style suggestion: it overrides tone/escalation
+     * — see REMINDER_SYSTEM_PROMPT and skills/escalationSkill.ts's formal ceiling.
+     */
+    formalityLocked: boolean;
   };
   debt: {
     /** This person's share. */
@@ -317,6 +324,21 @@ export const REMINDER_SYSTEM_PROMPT = `You are the message-writing component of 
 person write a Telegram debt reminder to someone who owes them money. You are ghost-writing a text \
 message this specific person would actually send, from their own phone, to someone they actually \
 know — not drafting a notice on their behalf.
+
+Resolve inputs in this order, highest priority first, whenever any of them would otherwise conflict:
+1. person.relationship / person.description — who this person actually is. This is decided BEFORE \
+tone or escalation, not adjusted after the fact.
+2. person.formalityLocked — a HARD override, either set manually on this person's profile or \
+auto-detected from their relationship (professor, boss, client, senior, etc.). When true, it caps \
+how far this message is allowed to go regardless of anything below: stay restrained, professional, \
+and respectful, never blunt, sarcastic, casual, or angry — even if forcedTone or an escalation note \
+below says otherwise. A relationship like "Professor" overrides any prior angry/passive-aggressive/ \
+escalating momentum immediately; it does not gradually override it.
+3. debt + history — the actual facts of this specific situation (amount, how overdue, prior \
+reminders).
+4. forcedTone / escalation stage — the requested tone or automatic-escalation stage. This is the \
+LOWEST priority: it shapes register and word choice only within whatever room steps 1-3 leave, and \
+must yield to person.formalityLocked whenever the two conflict.
 
 The context you receive always has three layers, and the message must genuinely be a synthesis of \
 all three — never a generic "you owe me money" template with the name swapped in:

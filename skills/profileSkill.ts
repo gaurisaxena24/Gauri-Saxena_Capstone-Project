@@ -22,6 +22,7 @@ export interface CreatePersonInput {
   relationship?: string;
   notes?: string;
   phoneNumber?: string;
+  keepFormal?: boolean;
 }
 
 export function addPerson(input: CreatePersonInput): Promise<Person> {
@@ -46,7 +47,13 @@ export function listPeople(): Promise<PersonWithStats[]> {
 
 export function editPerson(
   id: number,
-  patch: Partial<{ name: string; relationship: string | null; notes: string | null; phoneNumber: string | null }>
+  patch: Partial<{
+    name: string;
+    relationship: string | null;
+    notes: string | null;
+    phoneNumber: string | null;
+    keepFormal: boolean;
+  }>
 ): Promise<Person | undefined> {
   return updatePerson(id, patch);
 }

@@ -12,6 +12,7 @@ import {
   type Person,
 } from "../backend/database/database.js";
 import { getDebtsByPerson, getExpenseById } from "./debtSkill.js";
+import { shouldStayFormal } from "./formalitySkill.js";
 import { TONES, type ReminderContext, type Tone } from "../backend/ai/types.js";
 
 function isTone(value: string | null): value is Tone {
@@ -81,6 +82,7 @@ export async function buildReminderContext(params: {
       telegramUsername: person.telegram_username,
       relationship: person.relationship ?? "friend",
       description: person.notes ?? null,
+      formalityLocked: shouldStayFormal(person),
     },
     debt: {
       amount: debt.amount,

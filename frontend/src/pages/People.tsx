@@ -30,6 +30,7 @@ export function People() {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [relationship, setRelationship] = useState("");
   const [notes, setNotes] = useState("");
+  const [keepFormal, setKeepFormal] = useState(false);
   const [saving, setSaving] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
@@ -136,12 +137,14 @@ export function People() {
         phoneNumber: phoneNumber.trim() || undefined,
         relationship: relationship.trim() || undefined,
         notes: notes.trim() || undefined,
+        keepFormal,
       });
       setName("");
       setTelegramUsername("");
       setPhoneNumber("");
       setRelationship("");
       setNotes("");
+      setKeepFormal(false);
       setAdding(false);
       load();
       // Show "how to connect" right away — no navigating away or hunting for it.
@@ -202,6 +205,21 @@ export function People() {
             onChange={setNotes}
             placeholder="e.g. laid-back, jokes around a lot, always forgets to pay but means well"
           />
+          <label className="flex items-start gap-2 text-sm text-ink">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={keepFormal}
+              onChange={(e) => setKeepFormal(e.target.checked)}
+            />
+            <span>
+              Keep reminders restrained/formal for this person
+              <span className="block text-xs text-ink-faint">
+                Also auto-detected from Relationship (e.g. "professor", "boss") — turn this on to force it
+                regardless of what you type there.
+              </span>
+            </span>
+          </label>
           {addError && <ErrorBanner message={addError} />}
           <button
             onClick={handleAdd}
