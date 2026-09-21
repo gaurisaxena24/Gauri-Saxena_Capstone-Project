@@ -184,12 +184,6 @@ export function People() {
     <div>
       <div className="mb-6 flex items-center justify-between">
         <h1 className="font-display text-2xl font-bold text-ink">People</h1>
-        <button
-          onClick={() => setAdding((v) => !v)}
-          className="rounded-full bg-ink px-4 py-2 text-sm font-semibold text-paper"
-        >
-          {adding ? "Cancel" : "+ Add Person"}
-        </button>
       </div>
 
       {adding && (
