@@ -1041,6 +1041,66 @@ code was touched.
 
 ---
 
+## 2026-09-22 (4)
+### Task: Fix "+ Add People" header button doing nothing when already on /people
+
+**What I asked Claude Code to do:**
+The "+ Add People" button in the top header did nothing when clicked while the user was already on
+the `/people` page. A prior agent in this session had already diagnosed the bug and written the fix
+to `frontend/src/pages/People.tsx`, handing it to this pass already sitting uncommitted on
+`assesment-2&3-gauri`'s working tree. This pass's job: sanity-check the diff against the described
+root cause and fix, re-verify with `tsc`, commit, push, merge into `main`, push `main`, and confirm
+the Railway deploy - production verification of the actual save round-trip was deferred to the
+calling session after deploy, since there is no local Postgres in this environment.
+
+**What Claude Code did:**
+- Confirmed the repo was already checked out on `assesment-2&3-gauri` (not `main`) with the fix
+  uncommitted, and that the branch was up to date with `origin/assesment-2&3-gauri`, so no branch
+  switch or divergence check against `main` was needed.
+- Read the full diff of `frontend/src/pages/People.tsx` against its previous committed version and
+  confirmed it matches the described fix exactly and only: `useSearchParams()` destructure changed
+  to also capture `setSearchParams`, plus one new `useEffect` (right after the existing
+  `useEffect(load, [])`) that opens the add-person form whenever `?add=1` appears in the URL on any
+  render (not just first mount), then strips that param via `setSearchParams(..., { replace: true
+  })`. No other lines changed.
+- Re-ran `npx tsc --noEmit -p .` in `frontend/` - clean, no errors.
+- Committed `People.tsx` alone on `assesment-2&3-gauri` as `4e24a4f` (commit body explains the
+  mount-only-`useState` root cause and the `useEffect`-based fix), pushed the branch, merged into
+  `main` via `git merge --no-ff`, pushed `main`, and confirmed Railway's auto-deploy from the new
+  `main` commit before reporting back.
+
+**Files created/modified:**
+- `frontend/src/pages/People.tsx`
+- `BUILD_LOG.md` (this entry, committed separately from the code change per this repo's convention)
+
+**Result:** Code change committed as `4e24a4f` on `assesment-2&3-gauri`; this `BUILD_LOG.md` entry
+follows as a second commit on the same branch before both are pushed and merged into `main` in one
+`git merge --no-ff`. See this session's final report for the merge commit hash and deployment
+confirmation.
+
+**Testing / verification:**
+- `npx tsc --noEmit -p .` in `frontend/`: clean, no errors (re-run in this pass, in addition to the
+  prior agent's earlier clean run and its local JS-driven click test of the real NavLink element,
+  which confirmed the form now opens both on fresh navigation and while already on `/people`, and
+  that `?add=1` is cleared from the URL afterward).
+- Manual read-through of the full `git diff` for `People.tsx` against its previous committed
+  version, cross-checked line by line against the root-cause/fix summary provided for this task.
+- Not verified in this pass or the prior one: the actual save round-trip (creating a real person via
+  the form, seeing it appear in the list, confirming Postgres persistence) - no local Postgres is
+  available in this environment. This was deliberately deferred to post-deploy verification against
+  production by the calling session, per the user's explicit choice. No test data was created in
+  this pass.
+
+**Claude Code token usage:** Not available (see the automatic per-turn token usage log below for
+this session's per-turn figures).
+
+**Notes / issues:** This is the third regression in this general area within this session's history
+(header button added, then its only fallback removed, then this mount-only state bug) - worth
+noting if `People.tsx`'s add-form entry points are touched again. No backend, database schema, or
+Telegram-integration code was touched.
+
+---
+
 ## Automatic per-turn token usage log
 
 Everything above this line is the narrative task-by-task log (one entry per unit of work, written
@@ -1209,3 +1269,5 @@ automatic logging to keep working correctly.
 - 2026-09-22 12:49:29 - 8750573 tokens (input: 8694521, output: 56052)
 - 2026-09-22 12:51:45 - 199853 tokens (input: 199766, output: 87)
 - 2026-09-22 12:53:49 - 1427640 tokens (input: 1422200, output: 5440)
+- 2026-09-22 13:02:24 - 10226165 tokens (input: 10207291, output: 18874)
+- 2026-09-22 13:07:58 - 525264 tokens (input: 524142, output: 1122)
