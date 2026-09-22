@@ -912,6 +912,32 @@ The user showed a real Telegram screenshot proving two problems: consecutive aut
 
 **Notes / issues:** None outstanding. Did not touch the manual first-reminder flow, payer-hiding, expense calculation, or Telegram verification.
 
+## 2026-09-22
+### Task: Fix Dark Mode toggle knob horizontal position and color (follow-up to 3224443)
+
+**What I asked Claude Code to do:**
+A follow-up fix to the Settings page's Dark Mode toggle, after the earlier commit `3224443` ("Fix dark-mode Settings toggle knob turning black") which had already been merged to `main` and deployed. Root cause this time: the knob `<span>` only set `top-1`, with no explicit `left`, so its horizontal resting position depended on the browser's ambiguous CSS "static position" algorithm for an absolutely-positioned element with both `left`/`right` set to `auto`. Combined with the `translate-x-*` utility (which only adds a further offset on top of that ambiguous resting position), the knob could render flush against or overflowing past the track's edge instead of staying contained inside it, in both light/dark states, in the deployed app.
+
+**What Claude Code did:**
+- `frontend/src/pages/Settings.tsx`: added an explicit `left-1` (4px) base anchor to the knob `<span>` instead of relying on the browser's ambiguous default static-position algorithm.
+- Changed the conditional translate from `translate-x-6`/`translate-x-1` to `translate-x-5`/`translate-x-0`, so with the `left-1` base the OFF-state knob occupies pixels [4,24] and the ON-state knob occupies [24,44] inside the 48px-wide (`w-12`) track — a symmetric 4px margin on both sides in both states, guaranteeing containment.
+- Changed the knob color from always-white to conditional per updated design spec: `bg-black` when Dark Mode is OFF (light theme), `bg-white` when Dark Mode is ON (dark theme).
+- Left the track colors/size/position (`bg-ink`/`bg-ink/15`, `h-7 w-12 rounded-full`), the transition, and the `onClick` handler untouched.
+
+**Files created/modified:**
+- `frontend/src/pages/Settings.tsx`
+- `BUILD_LOG.md` (this entry)
+
+**Result:** The toggle knob now stays strictly contained inside the track in both light and dark states, with the correct black/white knob color per state.
+
+**Testing / verification:**
+- `npx tsc -b` (frontend build/typecheck): clean, no errors.
+- The knob's containment (left/right edges strictly inside the track's edges in both states) was verified in-browser via `getBoundingClientRect()` plus visual screenshots, per the task's own report of work already done before this commit/deploy pass.
+
+**Claude Code token usage:** Not available (see the automatic per-turn token usage log below for this session's per-turn figures).
+
+**Notes / issues:** None outstanding. Purely a visual/CSS fix to one component; no backend, database, or Telegram-integration code touched.
+
 ---
 
 ## Automatic per-turn token usage log
@@ -1077,3 +1103,5 @@ automatic logging to keep working correctly.
 - 2026-09-22 12:06:34 - 54804 tokens (input: 54276, output: 528)
 - 2026-09-22 12:07:39 - 110861 tokens (input: 110354, output: 507)
 - 2026-09-22 12:08:58 - 291671 tokens (input: 288803, output: 2868)
+- 2026-09-22 12:13:08 - 62513 tokens (input: 62230, output: 283)
+- 2026-09-22 12:18:29 - 3030259 tokens (input: 3011794, output: 18465)
