@@ -20,7 +20,7 @@ function buildInstructionsText(botUsername: string | null, code: string): string
 }
 
 export function People() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [people, setPeople] = useState<PersonSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The header's "+ Add People" button links here with ?add=1 to open this same existing
@@ -54,6 +54,23 @@ export function People() {
   }
 
   useEffect(load, []);
+
+  // The `useState` above only catches `?add=1` on first mount — clicking the header's "+ Add
+  // People" link while already on this page (a very likely case, since the nav tab sits right
+  // next to it) doesn't remount the component, so it wouldn't otherwise open the form. This
+  // re-checks on every navigation and clears the param afterward so it doesn't linger in the URL.
+  useEffect(() => {
+    if (searchParams.get("add") !== "1") return;
+    setAdding(true);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("add");
+        return next;
+      },
+      { replace: true }
+    );
+  }, [searchParams, setSearchParams]);
 
   useEffect(() => {
     getHealth()
