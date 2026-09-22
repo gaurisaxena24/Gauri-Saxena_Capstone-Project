@@ -940,6 +940,38 @@ A follow-up fix to the Settings page's Dark Mode toggle, after the earlier commi
 
 ---
 
+## 2026-09-22 (2)
+### Task: Make Dark Mode toggle knob always black (follow-up to a457bb0)
+
+**What I asked Claude Code to do:**
+A further follow-up to the Settings page's Dark Mode toggle, on top of `a457bb0` (which had just been merged to `main` as part of merge commit `ccb35d6` and deployed). `a457bb0` made the knob color conditional: black when Dark Mode is OFF, white when ON. After looking at a screenshot with Dark Mode ON (showing a white knob), I clarified I want the knob to always be black in both states — only the track color and the knob's left/right position should change between Dark Mode on/off, not the knob's color. I then asked for the fix to be committed, pushed, merged to `main`, and deployed.
+
+**What Claude Code did:**
+- `frontend/src/pages/Settings.tsx`: changed the knob `<span>` className so `bg-black` is applied unconditionally instead of switching between `bg-white` (dark/on) and `bg-black` (light/off). The conditional now only toggles `translate-x-5` (on) vs `translate-x-0` (off) for horizontal position.
+- Left the `left-1` anchor, track colors/size (`bg-ink`/`bg-ink/15`, `h-7 w-12 rounded-full`), transition, and `onClick` handler unchanged from `a457bb0`.
+- The uncommitted change was found sitting on top of `main`'s working tree rather than on branch `assesment-2&3-gauri` as the task description assumed; verified the diff was identical either way (since `main` and the branch tip were content-identical for this file after the prior merge), then switched to `assesment-2&3-gauri`, carried the change over, and proceeded from there to match this repo's established branch/merge convention.
+- Committed on `assesment-2&3-gauri` as `977da8a`, pushed the branch, merged into `main` via `git merge --no-ff` as merge commit `c9a8b8d`, and pushed `main`.
+- Confirmed Railway auto-deployed the new `main` push: polled `railway status` until the new deployment (ID `7b165fb9-2572-4a76-a84e-5bcf74e5b8f4`, superseding the prior deployment ID seen right after the push) reached a stable `Online` state, then checked the production health endpoints.
+
+**Files created/modified:**
+- `frontend/src/pages/Settings.tsx`
+- `BUILD_LOG.md` (this entry)
+
+**Result:** The toggle knob is now always black in both Dark Mode on/off states; only the track color and knob position vary. Commit `977da8a` pushed to `assesment-2&3-gauri`, merge commit `c9a8b8d` pushed to `main`, and the change is live in production.
+
+**Testing / verification:**
+- `npx tsc --noEmit` in `frontend/`: clean, no errors.
+- `git diff` reviewed before commit to confirm only the intended two lines changed (knob `bg-black` made unconditional; translate conditional kept for position only).
+- Deployment verified via `railway status` polling (deployment ID changed from `a0a5c327-...` to `7b165fb9-...`, status progressed Building → Deploying → Online and stayed Online across ~27 subsequent polls).
+- Production health checked after deploy: `GET /` → 200, `GET /health` → 200, `GET /api/health` → 200, all against `https://gauri-saxenacapstone-project-production.up.railway.app`.
+- No test/throwaway database rows or Telegram messages were created for this task — it was a frontend-only CSS/className change with no backend or bot interaction.
+
+**Claude Code token usage:** Not available (see the automatic per-turn token usage log below for this session's per-turn figures).
+
+**Notes / issues:** None outstanding. Purely a visual/CSS fix to one component; no backend, database, or Telegram-integration code touched.
+
+---
+
 ## Automatic per-turn token usage log
 
 Everything above this line is the narrative task-by-task log (one entry per unit of work, written
