@@ -1,6 +1,7 @@
 import type { ReactElement } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { SettingsProvider } from "./context/SettingsContext";
 import { Layout } from "./components/Layout";
 import { Login } from "./pages/Login";
 import { Dashboard } from "./pages/Dashboard";
@@ -8,6 +9,7 @@ import { AddExpenseFlow } from "./pages/AddExpenseFlow";
 import { People } from "./pages/People";
 import { PersonDetail } from "./pages/PersonDetail";
 import { Expenses } from "./pages/Expenses";
+import { Settings } from "./pages/Settings";
 
 function RequireAuth({ children }: { children: ReactElement }) {
   const { user, loading } = useAuth();
@@ -38,6 +40,7 @@ function AppRoutes() {
         {/* Same page, not a separate expense/debt page — this just deep-links to auto-expand and
             scroll to one specific expense's card (e.g. from a person's debt history). */}
         <Route path="/expenses/:id" element={<Expenses />} />
+        <Route path="/settings" element={<Settings />} />
       </Route>
       <Route path="*" element={<Navigate to={user ? "/dashboard" : "/login"} replace />} />
     </Routes>
@@ -46,8 +49,10 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <AppRoutes />
-    </AuthProvider>
+    <SettingsProvider>
+      <AuthProvider>
+        <AppRoutes />
+      </AuthProvider>
+    </SettingsProvider>
   );
 }
