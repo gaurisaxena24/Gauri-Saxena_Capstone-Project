@@ -31,8 +31,8 @@ export function Settings() {
               }`}
             >
               <span
-                className={`absolute left-1 top-1 h-5 w-5 rounded-full shadow transition-transform ${
-                  theme === "dark" ? "translate-x-5 bg-white" : "translate-x-0 bg-black"
+                className={`absolute left-1 top-1 h-5 w-5 rounded-full bg-black shadow transition-transform ${
+                  theme === "dark" ? "translate-x-5" : "translate-x-0"
                 }`}
               />
             </button>
