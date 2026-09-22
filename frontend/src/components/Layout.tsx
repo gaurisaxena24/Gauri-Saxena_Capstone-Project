@@ -8,7 +8,7 @@ const NAV_ITEMS = [
 ];
 
 export function Layout() {
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
 
   return (
     <div className="min-h-screen bg-paper">
@@ -48,10 +48,15 @@ export function Layout() {
             >
               + Add Expense
             </NavLink>
+            <NavLink
+              to="/settings"
+              className={({ isActive }) =>
+                `text-sm font-medium ${isActive ? "text-ink" : "text-ink-soft hover:text-ink"}`
+              }
+            >
+              Settings
+            </NavLink>
             <span className="text-sm text-ink-faint">@{user?.telegramUsername}</span>
-            <button onClick={logout} className="text-sm font-medium text-ink-soft hover:text-ink">
-              Log out
-            </button>
           </div>
         </div>
       </header>

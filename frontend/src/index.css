@@ -36,11 +36,31 @@ html {
   color-scheme: light;
 }
 
+/* Settings > Dark Mode — overrides the same tokens every component already reads via
+   bg-paper/text-ink/etc (Tailwind v4 generates those utilities from the @theme block above), so
+   the whole app re-themes without touching individual components. */
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --color-paper: #16171b;
+  --color-ink: #f2f1ee;
+  --color-ink-soft: #b7b8bf;
+  --color-ink-faint: #7d7e85;
+  --color-card: #1f2025;
+  --color-border: #33343b;
+}
+
+/* Settings > Font Size — scales the root em, so every Tailwind text-* size (all rem-based) scales
+   with it, without touching individual components. */
+html[data-font-size="large"] {
+  font-size: 118%;
+}
+
 body {
   background-color: var(--color-paper);
   color: var(--color-ink);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 h1,
