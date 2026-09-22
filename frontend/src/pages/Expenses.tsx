@@ -28,6 +28,11 @@ interface DebtActionState {
  * and everyone who owes money from it — their amount, paid/unpaid status, generated reminder
  * message, and full send history — lives nested directly inside that same card. Expanding is all
  * done in place (local state below); nothing here navigates to another page.
+ *
+ * Information hierarchy per card: name + total, then who owes and whether it's paid (always
+ * visible, since that's what the user scans for), then items/receipt/notes behind one "N items ·
+ * Receipt available" disclosure, and each person's reminder activity/message/actions behind their
+ * own row (skipped when there's only one person, so the common case needs no extra click).
  */
 export function Expenses() {
   const { id: focusId } = useParams();
@@ -35,6 +40,7 @@ export function Expenses() {
   const [error, setError] = useState<string | null>(null);
   const [removingId, setRemovingId] = useState<number | null>(null);
   const [removeErrors, setRemoveErrors] = useState<Record<number, string>>({});
+  const [openMenuId, setOpenMenuId] = useState<number | null>(null);
 
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [debtsByExpense, setDebtsByExpense] = useState<Record<number, ExpenseDebtDetail[]>>({});
@@ -53,7 +59,12 @@ export function Expenses() {
   function load() {
     setError(null);
     listExpenses()
-      .then((res) => setExpenses(res.expenses))
+      .then((res) => {
+        setExpenses(res.expenses);
+        // Who-owes-what is the headline of each card, so it's fetched right away rather than
+        // waiting for the card to be expanded.
+        res.expenses.forEach((expense) => void loadDebts(expense.id));
+      })
       .catch((err) => setError(err instanceof Error ? err.message : "Couldn't load expenses."));
   }
 
@@ -91,12 +102,8 @@ export function Expenses() {
   function toggleExpense(expenseId: number) {
     setExpandedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(expenseId)) {
-        next.delete(expenseId);
-      } else {
-        next.add(expenseId);
-        if (!debtsByExpense[expenseId]) void loadDebts(expenseId);
-      }
+      if (next.has(expenseId)) next.delete(expenseId);
+      else next.add(expenseId);
       return next;
     });
   }
@@ -109,7 +116,6 @@ export function Expenses() {
     if (!expenses.some((e) => e.id === targetId)) return;
     didFocus.current = true;
     setExpandedIds((prev) => new Set(prev).add(targetId));
-    if (!debtsByExpense[targetId]) void loadDebts(targetId);
     setTimeout(() => focusedRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 100);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusId, expenses]);
@@ -228,112 +234,172 @@ export function Expenses() {
 
       <div className="space-y-3">
         {expenses?.map((expense) => {
-          const expanded = expandedIds.has(expense.id);
+          const detailsExpanded = expandedIds.has(expense.id);
           const debts = debtsByExpense[expense.id];
           const loadingDebts = loadingIds.has(expense.id);
           const isFocused = Boolean(focusId) && Number(focusId) === expense.id;
+          const hasDetails = expense.lineItems.length > 0 || Boolean(expense.imageUrl) || Boolean(expense.description);
+          const detailsSummary = [
+            expense.lineItems.length > 0
+              ? `${expense.lineItems.length} item${expense.lineItems.length === 1 ? "" : "s"}`
+              : null,
+            expense.imageUrl ? "Receipt available" : null,
+          ]
+            .filter(Boolean)
+            .join(" · ");
+
           return (
             <div
               key={expense.id}
               ref={isFocused ? focusedRef : undefined}
               className={`rounded-2xl border bg-card ${isFocused ? "border-accent" : "border-border"}`}
             >
-              <button
-                type="button"
-                onClick={() => toggleExpense(expense.id)}
-                className="flex w-full items-center justify-between gap-3 p-4 text-left"
-              >
-                <div>
-                  <p className="font-medium text-ink">{expense.merchant ?? expense.category ?? "Expense"}</p>
-                  <p className="text-sm text-ink-faint">
-                    {formatDate(expense.date ?? expense.createdAt)}
-                    {debts && debts.length > 0 ? ` · ${debts.length} ${debts.length === 1 ? "person" : "people"}` : ""}
-                  </p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="font-medium text-ink">{formatCurrency(expense.total)}</span>
-                  <span className={`text-ink-faint transition-transform ${expanded ? "rotate-180" : ""}`}>▾</span>
-                </div>
-              </button>
-
-              {expanded && (
-                <div className="space-y-4 border-t border-border p-4">
-                  {removeErrors[expense.id] && <ErrorBanner message={removeErrors[expense.id]} />}
-
-                  {(expense.category || expense.tax !== null || expense.tip !== null || expense.paymentMethod) && (
-                    <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-ink-soft">
-                      {expense.category && <span>Category: {expense.category}</span>}
-                      {expense.tax !== null && <span>Tax: {formatCurrency(expense.tax)}</span>}
-                      {expense.tip !== null && <span>Tip: {formatCurrency(expense.tip)}</span>}
-                      {expense.paymentMethod && <span>Paid via {expense.paymentMethod}</span>}
-                    </div>
-                  )}
-
-                  {expense.imageUrl && (
-                    <img
-                      src={expense.imageUrl}
-                      alt="Source"
-                      className="max-h-56 w-full rounded-xl border border-border bg-paper object-contain"
-                    />
-                  )}
-
-                  {expense.lineItems.length > 0 && (
-                    <div>
-                      <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-faint">Items</h3>
-                      <ul className="divide-y divide-border text-sm">
-                        {expense.lineItems.map((item, i) => (
-                          <li key={i} className="flex items-center justify-between py-1.5">
-                            <span className="text-ink-soft">{item.name}</span>
-                            <span className="font-medium text-ink">{formatCurrency(item.price)}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {expense.description && <p className="text-sm text-ink-soft">{expense.description}</p>}
-
+              <div className="flex items-center gap-2 p-4">
+                <button
+                  type="button"
+                  onClick={() => toggleExpense(expense.id)}
+                  className="flex flex-1 items-center justify-between gap-3 text-left"
+                >
                   <div>
-                    <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-faint">
-                      Who owes from this expense
-                    </h3>
-                    {loadingDebts && <p className="text-sm text-ink-faint">Loading…</p>}
-                    {loadErrors[expense.id] && (
-                      <ErrorBanner message={loadErrors[expense.id]} onRetry={() => loadDebts(expense.id)} />
+                    <p className="text-base font-semibold text-ink">
+                      {expense.merchant ?? expense.category ?? "Expense"}
+                    </p>
+                    <p className="mt-0.5 text-sm text-ink-faint">
+                      {formatDate(expense.date ?? expense.createdAt)}
+                      {expense.merchant && expense.category ? ` · ${expense.category}` : ""}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-base font-semibold text-ink">{formatCurrency(expense.total)}</span>
+                    <span className={`text-ink-faint transition-transform ${detailsExpanded ? "rotate-180" : ""}`}>
+                      ▾
+                    </span>
+                  </div>
+                </button>
+
+                <div
+                  className="relative shrink-0"
+                  onBlur={(e) => {
+                    if (!e.currentTarget.contains(e.relatedTarget as Node)) setOpenMenuId(null);
+                  }}
+                >
+                  <button
+                    type="button"
+                    aria-label="More actions"
+                    onClick={() => setOpenMenuId((prev) => (prev === expense.id ? null : expense.id))}
+                    className="rounded-full px-2 py-1 text-ink-faint hover:bg-ink/5 hover:text-ink"
+                  >
+                    ⋯
+                  </button>
+                  {openMenuId === expense.id && (
+                    <div className="absolute right-0 top-full z-10 mt-1 w-44 rounded-xl border border-border bg-card p-1 shadow-lg">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOpenMenuId(null);
+                          void handleRemove(expense);
+                        }}
+                        disabled={removingId === expense.id}
+                        className="w-full rounded-lg px-3 py-2 text-left text-sm text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] disabled:opacity-40"
+                      >
+                        {removingId === expense.id ? "Removing…" : "Remove expense"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-3 px-4 pb-4">
+                {removeErrors[expense.id] && <ErrorBanner message={removeErrors[expense.id]} />}
+
+                <div>
+                  <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-faint">You're owed</h3>
+                  {loadingDebts && !debts && <p className="text-sm text-ink-faint">Loading…</p>}
+                  {loadErrors[expense.id] && (
+                    <ErrorBanner message={loadErrors[expense.id]} onRetry={() => loadDebts(expense.id)} />
+                  )}
+                  {debts && debts.length === 0 && (
+                    <p className="text-sm text-ink-faint">No one owes anything from this expense.</p>
+                  )}
+                  {debts && debts.length > 0 && (
+                    <div className="divide-y divide-border rounded-xl bg-paper px-3">
+                      {debts.map((debt) => (
+                        <DebtRow
+                          key={debt.id}
+                          debt={debt}
+                          toggleable={debts.length > 1}
+                          expanded={debts.length === 1 || expandedDebtIds.has(debt.id)}
+                          historyExpanded={expandedHistoryIds.has(debt.id)}
+                          action={debtActions[debt.id] ?? {}}
+                          reminderIntervalMinutes={reminderIntervalMinutes}
+                          onToggle={() => toggleDebt(debt.id)}
+                          onToggleHistory={() => toggleHistory(debt.id)}
+                          onSend={() => handleSendReminder(expense.id, debt)}
+                          onMarkPaid={() => handleMarkPaid(expense.id, debt)}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {hasDetails && (
+                  <button
+                    type="button"
+                    onClick={() => toggleExpense(expense.id)}
+                    className="flex w-full items-center justify-between text-sm text-ink-soft hover:text-ink"
+                  >
+                    <span>{detailsSummary}</span>
+                    <span className={`text-ink-faint transition-transform ${detailsExpanded ? "rotate-90" : ""}`}>
+                      ›
+                    </span>
+                  </button>
+                )}
+
+                {detailsExpanded && (
+                  <div className="space-y-4 border-t border-border pt-4">
+                    {(expense.tax !== null || expense.tip !== null || expense.paymentMethod) && (
+                      <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-ink-soft">
+                        {expense.tax !== null && <span>Tax: {formatCurrency(expense.tax)}</span>}
+                        {expense.tip !== null && <span>Tip: {formatCurrency(expense.tip)}</span>}
+                        {expense.paymentMethod && <span>Paid via {expense.paymentMethod}</span>}
+                      </div>
                     )}
-                    {debts && debts.length === 0 && (
-                      <p className="text-sm text-ink-faint">No one owes anything from this expense.</p>
+
+                    {expense.lineItems.length > 0 && (
+                      <div>
+                        <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-faint">Items</h3>
+                        <ul className="divide-y divide-border text-sm">
+                          {expense.lineItems.map((item, i) => (
+                            <li key={i} className="flex items-center justify-between py-1.5">
+                              <span className="text-ink-soft">{item.name}</span>
+                              <span className="font-medium text-ink">{formatCurrency(item.price)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
                     )}
-                    {debts && debts.length > 0 && (
-                      <div className="space-y-2">
-                        {debts.map((debt) => (
-                          <DebtRow
-                            key={debt.id}
-                            debt={debt}
-                            expanded={expandedDebtIds.has(debt.id)}
-                            historyExpanded={expandedHistoryIds.has(debt.id)}
-                            action={debtActions[debt.id] ?? {}}
-                            reminderIntervalMinutes={reminderIntervalMinutes}
-                            onToggle={() => toggleDebt(debt.id)}
-                            onToggleHistory={() => toggleHistory(debt.id)}
-                            onSend={() => handleSendReminder(expense.id, debt)}
-                            onMarkPaid={() => handleMarkPaid(expense.id, debt)}
-                          />
-                        ))}
+
+                    {expense.imageUrl && (
+                      <a
+                        href={expense.imageUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex items-center justify-between rounded-xl border border-border px-3 py-2 text-sm text-ink-soft hover:text-ink"
+                      >
+                        <span>View receipt</span>
+                        <span>›</span>
+                      </a>
+                    )}
+
+                    {expense.description && (
+                      <div>
+                        <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-faint">Notes</h3>
+                        <p className="text-sm text-ink-soft">{expense.description}</p>
                       </div>
                     )}
                   </div>
-
-                  <button
-                    type="button"
-                    onClick={() => handleRemove(expense)}
-                    disabled={removingId === expense.id}
-                    className="rounded-full border border-border px-4 py-1.5 text-xs font-medium text-ink-soft hover:border-[var(--color-danger)]/40 hover:text-[var(--color-danger)] disabled:opacity-40"
-                  >
-                    {removingId === expense.id ? "Removing…" : "Remove expense"}
-                  </button>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           );
         })}
@@ -345,6 +411,7 @@ export function Expenses() {
 function DebtRow({
   debt,
   expanded,
+  toggleable,
   historyExpanded,
   action,
   reminderIntervalMinutes,
@@ -355,6 +422,7 @@ function DebtRow({
 }: {
   debt: ExpenseDebtDetail;
   expanded: boolean;
+  toggleable: boolean;
   historyExpanded: boolean;
   action: DebtActionState;
   reminderIntervalMinutes: number;
@@ -375,49 +443,62 @@ function DebtRow({
       ? new Date(new Date(latestSent.sentAt ?? latestSent.createdAt).getTime() + reminderIntervalMinutes * 60_000)
       : null;
 
-  return (
-    <div className="rounded-xl border border-border bg-paper">
-      <button type="button" onClick={onToggle} className="flex w-full items-center justify-between gap-3 p-3 text-left">
-        <p className="font-medium text-ink">{debt.personName ?? "Unknown person"}</p>
-        <div className="flex items-center gap-2">
-          <StatusBadge status={debt.status} />
-          <span className="font-medium text-ink">{formatCurrency(debt.amount)}</span>
-          <span className={`text-ink-faint transition-transform ${expanded ? "rotate-180" : ""}`}>▾</span>
-        </div>
-      </button>
-
-      {/* Reminder status/history stays visible for this person's debt without needing to expand
-          the row first — it never lives on a separate, all-reminders page. */}
-      <div className="space-y-2 border-t border-border px-3 py-2">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">Reminder</p>
-          <p className="text-sm text-ink-soft">
-            {latestSent ? `Sent ${formatDateTime(latestSent.sentAt ?? latestSent.createdAt)}` : "Not sent yet"}
-          </p>
-        </div>
-
-        {automaticActive && (
-          <div className="rounded-lg border border-accent/30 bg-accent-soft px-3 py-2 text-xs text-ink">
-            <p className="font-medium">Automatic reminders active</p>
-            {nextReminderAt && <p>Next reminder: {formatDateTime(nextReminderAt.toISOString())}</p>}
-          </div>
+  const summary = (
+    <>
+      <span className="text-sm font-medium text-ink">{debt.personName ?? "Unknown person"}</span>
+      <span className="flex items-center gap-2">
+        <span className="text-sm font-semibold text-ink">{formatCurrency(debt.amount)}</span>
+        <StatusBadge status={debt.status} />
+        {toggleable && (
+          <span className={`text-ink-faint transition-transform ${expanded ? "rotate-90" : ""}`}>›</span>
         )}
+      </span>
+    </>
+  );
 
-        {debt.status === "PAID" && debt.paidAt && <p className="text-xs text-ink-faint">Paid {formatDateTime(debt.paidAt)}</p>}
+  return (
+    <div className="py-2.5">
+      {toggleable ? (
+        <button type="button" onClick={onToggle} className="flex w-full items-center justify-between gap-3 text-left">
+          {summary}
+        </button>
+      ) : (
+        <div className="flex items-center justify-between gap-3">{summary}</div>
+      )}
 
-        {debt.reminders.length > 0 && (
+      {expanded && (
+        <div className="mt-2 space-y-3 rounded-xl bg-ink/[0.03] p-3">
+          {action.error && <ErrorBanner message={action.error} />}
+
           <div>
-            <button
-              type="button"
-              onClick={onToggleHistory}
-              className="text-xs font-medium text-ink-soft underline decoration-dotted underline-offset-2 hover:text-ink"
-            >
-              Reminder history {historyExpanded ? "▴" : "▾"} ({debt.reminders.length})
-            </button>
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-ink-faint">Reminder activity</h4>
+            <p className="mt-1 text-sm text-ink-soft">
+              {latestSent
+                ? `Last reminder · ${formatDateTime(latestSent.sentAt ?? latestSent.createdAt)}`
+                : "No reminders sent yet"}
+            </p>
+            {debt.status === "PAID" && debt.paidAt && (
+              <p className="text-sm text-ink-soft">Paid · {formatDateTime(debt.paidAt)}</p>
+            )}
+            {automaticActive && nextReminderAt && (
+              <p className="text-sm text-ink-soft">
+                Next automatic reminder · {formatDateTime(nextReminderAt.toISOString())}
+              </p>
+            )}
+            {debt.reminders.length > 0 && (
+              <button
+                type="button"
+                onClick={onToggleHistory}
+                className="mt-1 text-xs font-medium text-ink-soft underline decoration-dotted underline-offset-2 hover:text-ink"
+              >
+                {debt.reminders.length} {debt.reminders.length === 1 ? "reminder" : "reminders"}{" "}
+                {historyExpanded ? "▴" : "›"}
+              </button>
+            )}
             {historyExpanded && (
               <div className="mt-2 space-y-2">
                 {debt.reminders.map((r) => (
-                  <div key={r.id} className="rounded-lg bg-ink/[0.03] p-2 text-xs">
+                  <div key={r.id} className="rounded-lg bg-card p-2 text-xs">
                     <div className="flex items-center justify-between">
                       <span className={r.status === "SENT" ? "text-[var(--color-success)]" : "text-[var(--color-danger)]"}>
                         {r.status === "SENT" ? "Sent" : "Failed"}
@@ -430,12 +511,6 @@ function DebtRow({
               </div>
             )}
           </div>
-        )}
-      </div>
-
-      {expanded && (
-        <div className="space-y-3 border-t border-border p-3">
-          {action.error && <ErrorBanner message={action.error} />}
 
           {debt.message && (
             <div>

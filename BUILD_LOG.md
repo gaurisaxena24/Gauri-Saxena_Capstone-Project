@@ -972,6 +972,75 @@ A further follow-up to the Settings page's Dark Mode toggle, on top of `a457bb0`
 
 ---
 
+## 2026-09-22 (3)
+### Task: Redesign the Expenses page for clearer hierarchy and progressive disclosure
+
+**What I asked Claude Code to do:**
+A large UI/UX redesign of the Expenses page, per detailed design-student-style feedback asking for
+a clearer information hierarchy, progressive disclosure, and less "database/admin dashboard" feel.
+The rewrite itself (of `frontend/src/pages/Expenses.tsx`, functions `Expenses()` and `DebtRow()`)
+was done by a prior agent in this session and handed to this pass already sitting uncommitted on
+`main`'s working tree, along with an auto-generated `BUILD_LOG.md` change (the per-turn token log
+below). This pass's job: verify the change, get it onto the repo's established branch
+(`assesment-2&3-gauri`), commit, push, merge to `main`, push `main`, and confirm the Railway deploy
+- without local browser verification, since there is no local Postgres/Docker available in this
+environment to run the backend against an isolated database. The user was told this beforehand and
+chose to deploy first and verify on production afterward, rather than set up local testing.
+
+**What Claude Code did:**
+- Verified `assesment-2&3-gauri` was not diverged from `main` (`main`'s tip was exactly
+  `assesment-2&3-gauri`'s prior merge, `6ca8629`), then `git checkout assesment-2&3-gauri`, which
+  carried the uncommitted `Expenses.tsx`/`BUILD_LOG.md` changes over cleanly (git status showed the
+  same two modified files immediately after the checkout).
+- Read the full diff of `frontend/src/pages/Expenses.tsx` and confirmed it matches the described
+  redesign: header now shows name + prominent total with date/category as a subtitle; "You're owed"
+  is always visible per card (via eager `loadDebts()` calls for every expense right after
+  `listExpenses()` resolves, instead of only on card expand); items/receipt/notes are now behind a
+  single "N items - Receipt available" disclosure row, with the receipt image no longer inlined by
+  default (a "View receipt" link opens it in a new tab instead); `DebtRow` auto-expands its detail
+  panel when there's exactly one debtor (`expanded={debts.length === 1 || expandedDebtIds.has(...)}`)
+  and otherwise stays individually click-to-expand; reminder history is now a small expandable
+  "N reminders" link; and "Remove expense" was moved into a controlled-state "..." dropdown menu
+  with blur-to-close. All existing fetch/mutation functions and the deep-link-and-scroll behavior
+  were left untouched, matching the description.
+- Re-ran `npx tsc --noEmit -p .` in `frontend/` - clean, no errors.
+- Committed the `Expenses.tsx` change alone on `assesment-2&3-gauri` as `18af64b` (commit body
+  explains the information hierarchy and the eager-debt-loading behavior change), pushed the branch,
+  merged into `main` via `git merge --no-ff`, pushed `main`, and confirmed Railway's auto-deploy
+  from the new `main` commit before reporting back.
+
+**Files created/modified:**
+- `frontend/src/pages/Expenses.tsx`
+- `BUILD_LOG.md` (this entry, committed separately from the code change per this repo's convention)
+
+**Result:** Code change committed as `18af64b` on `assesment-2&3-gauri`; this `BUILD_LOG.md` entry
+follows as a second commit on the same branch before both are pushed and merged into `main` in one
+`git merge --no-ff`. See this session's final report for the merge commit hash and deployment
+confirmation.
+
+**Testing / verification:**
+- `npx tsc --noEmit -p .` in `frontend/`: clean, no errors (re-run in this pass, in addition to the
+  prior agent's earlier clean run).
+- Manual read-through of the full `git diff` for `Expenses.tsx` against its previous committed
+  version, cross-checked line by line against the redesign summary provided for this task.
+- No live browser/visual verification was performed in this pass - there is no local Postgres in
+  this environment to run the backend in isolation, so this was deliberately deferred to
+  post-deploy verification against production, per the user's explicit choice.
+- No test data (people/expenses/debts) was created or needed for this task, since no database
+  interaction was performed - it is a frontend presentation-only change verified by type-checking
+  and diff review only.
+
+**Claude Code token usage:** Not available (see the automatic per-turn token usage log below for
+this session's per-turn figures).
+
+**Notes / issues:** Behavior change to note: "You're owed" being always-visible means debts for
+every expense are now fetched eagerly on page load (one `getExpense` call per expense) rather than
+lazily on card expand, increasing upfront API calls. Acceptable at this app's personal scale, but
+worth knowing if the expense list grows large. No backend, database schema, or Telegram-integration
+code was touched.
+
+---
+
 ## Automatic per-turn token usage log
 
 Everything above this line is the narrative task-by-task log (one entry per unit of work, written
@@ -1137,3 +1206,6 @@ automatic logging to keep working correctly.
 - 2026-09-22 12:08:58 - 291671 tokens (input: 288803, output: 2868)
 - 2026-09-22 12:13:08 - 62513 tokens (input: 62230, output: 283)
 - 2026-09-22 12:18:29 - 3030259 tokens (input: 3011794, output: 18465)
+- 2026-09-22 12:49:29 - 8750573 tokens (input: 8694521, output: 56052)
+- 2026-09-22 12:51:45 - 199853 tokens (input: 199766, output: 87)
+- 2026-09-22 12:53:49 - 1427640 tokens (input: 1422200, output: 5440)
