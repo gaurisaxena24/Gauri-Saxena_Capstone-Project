@@ -13,25 +13,28 @@ import {
   type ReminderStatus,
 } from "../backend/database/database.js";
 
-export function logReminder(input: {
-  debtId: number;
-  personId: number;
-  message: string;
-  tone: string | null;
-  status: ReminderStatus;
-  telegramMessageId?: string | number | null;
-}): Promise<Reminder> {
-  return recordReminder(input);
+export function logReminder(
+  userId: number,
+  input: {
+    debtId: number;
+    personId: number;
+    message: string;
+    tone: string | null;
+    status: ReminderStatus;
+    telegramMessageId?: string | number | null;
+  }
+): Promise<Reminder> {
+  return recordReminder(userId, input);
 }
 
-export function historyForDebt(debtId: number): Promise<Reminder[]> {
-  return getRemindersForDebt(debtId);
+export function historyForDebt(userId: number, debtId: number): Promise<Reminder[]> {
+  return getRemindersForDebt(userId, debtId);
 }
 
-export function historyForPerson(personId: number): Promise<Reminder[]> {
-  return getRemindersForPerson(personId);
+export function historyForPerson(userId: number, personId: number): Promise<Reminder[]> {
+  return getRemindersForPerson(userId, personId);
 }
 
-export function allReminders(limit?: number): Promise<Reminder[]> {
-  return listReminders(limit);
+export function allReminders(userId: number, limit?: number): Promise<Reminder[]> {
+  return listReminders(userId, limit);
 }

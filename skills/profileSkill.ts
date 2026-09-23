@@ -25,27 +25,28 @@ export interface CreatePersonInput {
   keepFormal?: boolean;
 }
 
-export function addPerson(input: CreatePersonInput): Promise<Person> {
-  return createPerson(input);
+export function addPerson(userId: number, input: CreatePersonInput): Promise<Person> {
+  return createPerson(userId, input);
 }
 
-export function findOrCreatePerson(input: CreatePersonInput): Promise<Person> {
-  return getOrCreatePerson(input);
+export function findOrCreatePerson(userId: number, input: CreatePersonInput): Promise<Person> {
+  return getOrCreatePerson(userId, input);
 }
 
-export function findPersonById(id: number): Promise<Person | undefined> {
-  return getPerson(id);
+export function findPersonById(userId: number, id: number): Promise<Person | undefined> {
+  return getPerson(userId, id);
 }
 
-export function findPersonByUsername(telegramUsername: string): Promise<Person | undefined> {
-  return getPersonByUsername(telegramUsername);
+export function findPersonByUsername(userId: number, telegramUsername: string): Promise<Person | undefined> {
+  return getPersonByUsername(userId, telegramUsername);
 }
 
-export function listPeople(): Promise<PersonWithStats[]> {
-  return listPeopleWithStats();
+export function listPeople(userId: number): Promise<PersonWithStats[]> {
+  return listPeopleWithStats(userId);
 }
 
 export function editPerson(
+  userId: number,
   id: number,
   patch: Partial<{
     name: string;
@@ -55,7 +56,7 @@ export function editPerson(
     keepFormal: boolean;
   }>
 ): Promise<Person | undefined> {
-  return updatePerson(id, patch);
+  return updatePerson(userId, id, patch);
 }
 
 /** A person can be sent to for real only once the poller has seen a genuine incoming message from them. */
@@ -64,6 +65,6 @@ export function isTelegramVerified(person: Person): boolean {
 }
 
 /** Removes a person and only that person — never their expenses/debts (a real DB foreign key blocks this while any debt still references them). */
-export function removePerson(id: number): Promise<boolean> {
-  return deletePerson(id);
+export function removePerson(userId: number, id: number): Promise<boolean> {
+  return deletePerson(userId, id);
 }

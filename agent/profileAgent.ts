@@ -11,37 +11,38 @@ import type { CreatePersonInput } from "../skills/profileSkill.js";
 
 export type { CreatePersonInput };
 
-export function addPerson(input: CreatePersonInput): Promise<Person> {
-  return profileSkill.addPerson(input);
+export function addPerson(userId: number, input: CreatePersonInput): Promise<Person> {
+  return profileSkill.addPerson(userId, input);
 }
 
-export function findOrCreatePerson(input: CreatePersonInput): Promise<Person> {
-  return profileSkill.findOrCreatePerson(input);
+export function findOrCreatePerson(userId: number, input: CreatePersonInput): Promise<Person> {
+  return profileSkill.findOrCreatePerson(userId, input);
 }
 
-export function findPersonById(id: number): Promise<Person | undefined> {
-  return profileSkill.findPersonById(id);
+export function findPersonById(userId: number, id: number): Promise<Person | undefined> {
+  return profileSkill.findPersonById(userId, id);
 }
 
-export function findPersonByUsername(telegramUsername: string): Promise<Person | undefined> {
-  return profileSkill.findPersonByUsername(telegramUsername);
+export function findPersonByUsername(userId: number, telegramUsername: string): Promise<Person | undefined> {
+  return profileSkill.findPersonByUsername(userId, telegramUsername);
 }
 
-export function listPeople(): Promise<PersonWithStats[]> {
-  return profileSkill.listPeople();
+export function listPeople(userId: number): Promise<PersonWithStats[]> {
+  return profileSkill.listPeople(userId);
 }
 
 export function editPerson(
+  userId: number,
   id: number,
   patch: Partial<{ name: string; relationship: string | null; notes: string | null; phoneNumber: string | null }>
 ): Promise<Person | undefined> {
-  return profileSkill.editPerson(id, patch);
+  return profileSkill.editPerson(userId, id, patch);
 }
 
 export function isTelegramVerified(person: Person): boolean {
   return profileSkill.isTelegramVerified(person);
 }
 
-export function removePerson(id: number): Promise<boolean> {
-  return profileSkill.removePerson(id);
+export function removePerson(userId: number, id: number): Promise<boolean> {
+  return profileSkill.removePerson(userId, id);
 }

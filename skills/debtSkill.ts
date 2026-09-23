@@ -50,24 +50,25 @@ export interface NewExpenseInput {
   confidence?: number | null;
 }
 
-export function recordExpense(input: NewExpenseInput): Promise<Expense> {
-  return createExpense(input);
+export function recordExpense(userId: number, input: NewExpenseInput): Promise<Expense> {
+  return createExpense(userId, input);
 }
 
-export function getExpenseById(id: number): Promise<Expense | undefined> {
-  return getExpense(id);
+export function getExpenseById(userId: number, id: number): Promise<Expense | undefined> {
+  return getExpense(userId, id);
 }
 
-export function listAllExpenses(limit?: number): Promise<Expense[]> {
-  return listExpenses(limit);
+export function listAllExpenses(userId: number, limit?: number): Promise<Expense[]> {
+  return listExpenses(userId, limit);
 }
 
 /** Removes an expense and only that expense — never `people`, never the debts drafted against it. */
-export function removeExpense(id: number): Promise<{ imagePath: string | null } | undefined> {
-  return deleteExpense(id);
+export function removeExpense(userId: number, id: number): Promise<{ imagePath: string | null } | undefined> {
+  return deleteExpense(userId, id);
 }
 
 export function editExpense(
+  userId: number,
   id: number,
   patch: Partial<{
     merchant: string | null;
@@ -85,55 +86,59 @@ export function editExpense(
     lineItems: ExpenseLineItem[];
   }>
 ): Promise<Expense | undefined> {
-  return updateExpense(id, patch);
+  return updateExpense(userId, id, patch);
 }
 
-export function attachDebt(input: {
-  expenseId: number;
-  personId: number;
-  amount: number;
-  currency: string | null;
-  shareMode: ShareModeValue;
-  additionalContext: string | null;
-  desiredAction: string | null;
-  contextJson: unknown;
-  selectedItems?: Array<{ name: string; amount: number }> | null;
-}): Promise<ExpenseDebt> {
-  return createExpenseDebt(input);
+export function attachDebt(
+  userId: number,
+  input: {
+    expenseId: number;
+    personId: number;
+    amount: number;
+    currency: string | null;
+    shareMode: ShareModeValue;
+    additionalContext: string | null;
+    desiredAction: string | null;
+    contextJson: unknown;
+    selectedItems?: Array<{ name: string; amount: number }> | null;
+  }
+): Promise<ExpenseDebt> {
+  return createExpenseDebt(userId, input);
 }
 
-export function getDebt(id: number): Promise<ExpenseDebt | undefined> {
-  return getExpenseDebt(id);
+export function getDebt(userId: number, id: number): Promise<ExpenseDebt | undefined> {
+  return getExpenseDebt(userId, id);
 }
 
-export function getDebtsByExpense(expenseId: number): Promise<ExpenseDebt[]> {
-  return getDebtsForExpense(expenseId);
+export function getDebtsByExpense(userId: number, expenseId: number): Promise<ExpenseDebt[]> {
+  return getDebtsForExpense(userId, expenseId);
 }
 
-export function getDebtsByPerson(personId: number): Promise<ExpenseDebt[]> {
-  return getDebtsForPerson(personId);
+export function getDebtsByPerson(userId: number, personId: number): Promise<ExpenseDebt[]> {
+  return getDebtsForPerson(userId, personId);
 }
 
-export function listAllDebts(limit?: number): Promise<ExpenseDebt[]> {
-  return listRecentDebts(limit);
+export function listAllDebts(userId: number, limit?: number): Promise<ExpenseDebt[]> {
+  return listRecentDebts(userId, limit);
 }
 
-export function saveContext(debtId: number, context: unknown): Promise<ExpenseDebt | undefined> {
-  return updateDebtContext(debtId, context);
+export function saveContext(userId: number, debtId: number, context: unknown): Promise<ExpenseDebt | undefined> {
+  return updateDebtContext(userId, debtId, context);
 }
 
 export function saveDraftMessage(
+  userId: number,
   debtId: number,
   patch: { message: string; tone: string | null; edited: boolean }
 ): Promise<ExpenseDebt | undefined> {
-  return updateDebtDraftMessage(debtId, patch);
+  return updateDebtDraftMessage(userId, debtId, patch);
 }
 
-export function markPaid(debtId: number, status: DebtStatus = "PAID"): Promise<ExpenseDebt | undefined> {
-  return setDebtStatus(debtId, status);
+export function markPaid(userId: number, debtId: number, status: DebtStatus = "PAID"): Promise<ExpenseDebt | undefined> {
+  return setDebtStatus(userId, debtId, status);
 }
 
 /** Removes a debt ("send request") and its own send-history only — never the person or expense it references. */
-export function removeDebt(debtId: number): Promise<boolean> {
-  return deleteExpenseDebt(debtId);
+export function removeDebt(userId: number, debtId: number): Promise<boolean> {
+  return deleteExpenseDebt(userId, debtId);
 }

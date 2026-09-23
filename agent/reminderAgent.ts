@@ -8,25 +8,28 @@
 import * as reminderSkill from "../skills/reminderSkill.js";
 import type { Reminder, ReminderStatus } from "../backend/database/database.js";
 
-export function logReminder(input: {
-  debtId: number;
-  personId: number;
-  message: string;
-  tone: string | null;
-  status: ReminderStatus;
-  telegramMessageId?: string | number | null;
-}): Promise<Reminder> {
-  return reminderSkill.logReminder(input);
+export function logReminder(
+  userId: number,
+  input: {
+    debtId: number;
+    personId: number;
+    message: string;
+    tone: string | null;
+    status: ReminderStatus;
+    telegramMessageId?: string | number | null;
+  }
+): Promise<Reminder> {
+  return reminderSkill.logReminder(userId, input);
 }
 
-export function historyForDebt(debtId: number): Promise<Reminder[]> {
-  return reminderSkill.historyForDebt(debtId);
+export function historyForDebt(userId: number, debtId: number): Promise<Reminder[]> {
+  return reminderSkill.historyForDebt(userId, debtId);
 }
 
-export function historyForPerson(personId: number): Promise<Reminder[]> {
-  return reminderSkill.historyForPerson(personId);
+export function historyForPerson(userId: number, personId: number): Promise<Reminder[]> {
+  return reminderSkill.historyForPerson(userId, personId);
 }
 
-export function allReminders(limit?: number): Promise<Reminder[]> {
-  return reminderSkill.allReminders(limit);
+export function allReminders(userId: number, limit?: number): Promise<Reminder[]> {
+  return reminderSkill.allReminders(userId, limit);
 }

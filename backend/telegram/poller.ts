@@ -20,7 +20,7 @@ import {
   formatResolvedSuffix,
 } from "../review/reviewMessage.js";
 import { sendTelegramMessage } from "../tools/sendTelegramMessage.js";
-import { getPrimaryUser, upsertTelegramContact, verifyPersonByCode, verifyPersonTelegram } from "../database/database.js";
+import { getOwnerOfPerson, upsertTelegramContact, verifyPersonByCode, verifyPersonTelegram } from "../database/database.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -149,9 +149,9 @@ async function handleVerifyCommand(message: TelegramMessage): Promise<boolean> {
 
   console.log(`[Telegram] verified ${person.name} (person id ${person.id}) via code, chat ${message.chat.id}`);
   // Worded from the verifying person's own point of view: they are the one connecting, not the one
-  // being reminded, so the confirmation says who they're now connected to (the app's owner) rather
-  // than repeating their own name back at them.
-  const owner = await getPrimaryUser();
+  // being reminded, so the confirmation says who they're now connected to — specifically the
+  // app-user who owns *this* contact, not just whichever app-user registered first.
+  const owner = await getOwnerOfPerson(person.id);
   const ownerLabel = owner ? `@${owner.telegram_username}` : "the app owner";
   await tgSendMessage(
     message.chat.id,

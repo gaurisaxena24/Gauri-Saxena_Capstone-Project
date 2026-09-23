@@ -36,16 +36,19 @@ function shortReason(text: string): string {
   return oneLine.length > MAX_REASON_LENGTH ? `${oneLine.slice(0, MAX_REASON_LENGTH).trim()}…` : oneLine;
 }
 
-export async function buildReminderContext(params: {
-  person: Person;
-  expense: Expense;
-  debt: ExpenseDebt;
-}): Promise<ReminderContext> {
+export async function buildReminderContext(
+  userId: number,
+  params: {
+    person: Person;
+    expense: Expense;
+    debt: ExpenseDebt;
+  }
+): Promise<ReminderContext> {
   const { person, expense, debt } = params;
   const [allDebts, allReminders, remindersForThisDebt] = await Promise.all([
-    getDebtsByPerson(person.id),
-    getRemindersForPerson(person.id),
-    getRemindersForDebt(debt.id),
+    getDebtsByPerson(userId, person.id),
+    getRemindersForPerson(userId, person.id),
+    getRemindersForDebt(userId, debt.id),
   ]);
   const priorDebts = allDebts.filter((d) => d.id !== debt.id);
   // getRemindersForPerson orders newest-first, so this filter preserves that order — [0] is the
@@ -65,7 +68,7 @@ export async function buildReminderContext(params: {
       .filter((d) => d.status === "UNPAID")
       .slice(0, 5)
       .map(async (d) => {
-        const otherExpense = await getExpenseById(d.expense_id);
+        const otherExpense = await getExpenseById(userId, d.expense_id);
         return {
           amount: d.amount,
           reason: shortReason(

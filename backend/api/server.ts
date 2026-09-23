@@ -12,13 +12,19 @@ import { expensesRouter } from "./routes/expenses.js";
 import { debtsRouter } from "./routes/debts.js";
 import { remindersRouter } from "./routes/reminders.js";
 import { dashboardRouter } from "./routes/dashboard.js";
+import { gmailRouter, isGmailConfigured } from "./routes/gmail.js";
+import { settingsRouter } from "./routes/settings.js";
 import { getReminderIntervalMinutes } from "../reminders/schedulerConfig.js";
+import { requireAuth } from "./middleware/requireAuth.js";
 
 const FRONTEND_DIST = resolve(findProjectRoot(import.meta.url), "frontend", "dist");
 
 export function startApiServer(): void {
   const app = express();
-  app.use(cors());
+  // credentials: true (required for the session cookie) can't pair with the wildcard origin, so an
+  // explicit origin is needed — same-origin in production (one process serves both frontend and
+  // API) and via the Vite dev proxy locally, so this mainly guards a future split-origin deploy.
+  app.use(cors({ origin: process.env.FRONTEND_URL || true, credentials: true }));
   app.use(express.json());
   app.use("/uploads", express.static(UPLOADS_DIR));
 
@@ -26,6 +32,7 @@ export function startApiServer(): void {
     res.json({
       aiConfigured: isGroqConfigured(),
       telegramConfigured: Boolean(process.env.TELEGRAM_BOT_TOKEN),
+      gmailConfigured: isGmailConfigured(),
       // Single source of truth: backend/reminders/schedulerConfig.ts. The frontend's "Automatic
       // reminders: every N minutes" text (DebtDetail.tsx) reads N from here rather than a
       // hardcoded copy, so changing the real cadence is still a one-line backend change.
@@ -38,11 +45,13 @@ export function startApiServer(): void {
   });
 
   app.use("/api/auth", authRouter);
-  app.use("/api/people", peopleRouter);
-  app.use("/api/expenses", expensesRouter);
-  app.use("/api/debts", debtsRouter);
-  app.use("/api/reminders", remindersRouter);
-  app.use("/api/dashboard", dashboardRouter);
+  app.use("/api/people", requireAuth, peopleRouter);
+  app.use("/api/expenses", requireAuth, expensesRouter);
+  app.use("/api/debts", requireAuth, debtsRouter);
+  app.use("/api/reminders", requireAuth, remindersRouter);
+  app.use("/api/dashboard", requireAuth, dashboardRouter);
+  app.use("/api/gmail", requireAuth, gmailRouter);
+  app.use("/api/settings", requireAuth, settingsRouter);
 
   const frontendBuilt = existsSync(FRONTEND_DIST);
   console.error(

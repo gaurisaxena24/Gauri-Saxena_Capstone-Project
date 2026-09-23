@@ -54,8 +54,8 @@ export function Login() {
             />
           </div>
           <p className="mt-2 text-xs text-ink-faint">
-            This just identifies you locally — it's not a real login. Anyone with access to this
-            computer can enter any username.
+            This creates your own account if you're new, or signs you back into an existing one —
+            but there's no password, so anyone who knows a username can sign in as that account.
           </p>
 
           {error && (
