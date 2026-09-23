@@ -31,6 +31,7 @@ import {
   normalizeGeneratedReminder,
   normalizeGeneratedThankYou,
   type GeneratedReminder,
+  type PaidVia,
   type ReminderContext,
   type Tone,
 } from "../backend/ai/types.js";
@@ -118,13 +119,13 @@ export async function draftReminderMessage(params: {
 }
 
 /** The one-time "thanks for paying" message sent when a debt is marked paid — see backend/ai/types.ts's THANK_YOU_SYSTEM_PROMPT. */
-export async function draftThankYouMessage(context: ReminderContext): Promise<string> {
+export async function draftThankYouMessage(context: ReminderContext, paidVia: PaidVia): Promise<string> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       const raw = await callGroqText({
         system: THANK_YOU_SYSTEM_PROMPT,
-        prompt: buildThankYouPrompt(context),
+        prompt: buildThankYouPrompt(context, paidVia),
         maxTokens: 256,
         reasoningEffort: "low",
       });

@@ -31,8 +31,15 @@
   --color-tone-funny-soft: #fbf3dc;
   --color-tone-passive: #c1561b;
   --color-tone-passive-soft: #fbeadf;
-  --color-tone-unhinged: #c22b2b;
-  --color-tone-unhinged-soft: #fbe7e7;
+  /* Escalation ladder, cool to hot: casual (blue) → passive-aggressive (amber) → annoyed (orange)
+     → slightly angry (red) → angry (dark red) → very angry (near-black red) → unhinged (purple,
+     off the scale). */
+  --color-tone-furious: #4a0f0f;
+  --color-tone-furious-soft: #ead3d3;
+  --color-tone-mad: #c22b2b;
+  --color-tone-mad-soft: #fbe7e7;
+  --color-tone-unhinged: #7b2cbf;
+  --color-tone-unhinged-soft: #f1e6fb;
   --color-tone-angry: #7a1f1f;
   --color-tone-angry-soft: #f3dcdc;
 }

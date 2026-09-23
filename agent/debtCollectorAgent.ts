@@ -20,7 +20,7 @@ import * as contextAgent from "./contextAgent.js";
 import * as messageDraftAgent from "./messageDraftAgent.js";
 import * as telegramAgent from "./telegramAgent.js";
 import * as reminderAgent from "./reminderAgent.js";
-import type { ExpenseExtraction, ReminderContext, Tone } from "../backend/ai/types.js";
+import type { ExpenseExtraction, PaidVia, ReminderContext, Tone } from "../backend/ai/types.js";
 import type { Expense, ExpenseDebt, Person } from "../backend/database/database.js";
 import type { ExpenseReadResult, ExtractionMethod } from "./expenseReaderAgent.js";
 import type { ShareMode } from "./debtCalculationAgent.js";
@@ -211,8 +211,16 @@ export async function sendReminder(userId: number, debt: ExpenseDebt, person: Pe
  * repeat call, e.g. a duplicate button click) is a no-op with respect to messaging: the status is
  * simply re-confirmed and no second thank-you is ever sent, since "already PAID before this call"
  * is exactly the condition checked below.
+ *
+ * The thank-you is written only from this debt's own context (who they are, what it was for, how
+ * many reminders it took and how heated they got, and `paidVia`) — if it can't be generated (e.g.
+ * Groq is rate-limited) nothing is sent; there is deliberately no generic fallback text.
  */
-export async function markDebtPaid(userId: number, debtId: number): Promise<ExpenseDebt | undefined> {
+export async function markDebtPaid(
+  userId: number,
+  debtId: number,
+  paidVia: PaidVia = "manual"
+): Promise<ExpenseDebt | undefined> {
   const before = await debtAgent.getDebt(userId, debtId);
   if (!before) return undefined;
   const wasAlreadyPaid = before.status === "PAID";
@@ -227,7 +235,7 @@ export async function markDebtPaid(userId: number, debtId: number): Promise<Expe
     if (!expense) return updated;
 
     const context = await contextAgent.buildContext(userId, { person, expense, debt: updated });
-    const message = await messageDraftAgent.draftThankYou(context);
+    const message = await messageDraftAgent.draftThankYou(context, paidVia);
     const result = await telegramAgent.sendMessage(person, message);
     await reminderAgent.logReminder(userId, {
       debtId: updated.id,

@@ -307,7 +307,7 @@ debtsRouter.post("/:id/sync", async (req, res) => {
       reason: result.reason,
     });
 
-    const paid = result.status === "PAYMENT_FOUND" ? await agent.markDebtPaid(userId, debt.id) : undefined;
+    const paid = result.status === "PAYMENT_FOUND" ? await agent.markDebtPaid(userId, debt.id, "gmail") : undefined;
     if (paid) {
       console.log(`[gmail-sync] Debt ${debt.id} (user ${userId}) matched Gmail message ${result.emailId} on name + date + amount — marked paid.`);
     }

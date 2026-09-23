@@ -32,7 +32,19 @@ export interface ExpenseExtraction {
   confidence: number | null;
 }
 
-export const TONES = ["Casual", "Funny", "Passive-Aggressive", "Unhinged", "Angry"] as const;
+/** "Funny" stays valid for manual picks / older stored reminders; the automatic
+ * escalation ladder uses Casual → Passive-Aggressive → Annoyed → Slightly Angry → Angry → Very Angry → Unhinged — see
+ * skills/escalationSkill.ts. */
+export const TONES = [
+  "Casual",
+  "Funny",
+  "Passive-Aggressive",
+  "Annoyed",
+  "Slightly Angry",
+  "Angry",
+  "Very Angry",
+  "Unhinged",
+] as const;
 export type Tone = (typeof TONES)[number];
 
 export interface ReminderContext {
@@ -61,6 +73,8 @@ export interface ReminderContext {
     date: string | null;
     category: string | null;
     reason: string;
+    /** Where it happened — the merchant/place on the expense (e.g. "Toit", "Swiggy"), if known. */
+    place: string | null;
     shareMode: "FULL" | "HALF" | "CUSTOM";
     /** Free-text context the user typed when creating this debt (e.g. "she already promised to pay Friday"). */
     additionalContext: string | null;
@@ -380,8 +394,7 @@ contact, when it isn't one:
 - history.previousReminders is how many times this person has already been reminded about ANY debt \
 before. 0 means this is genuinely the first time — don't fake familiarity or exasperation that \
 hasn't been earned yet. A higher count, especially for a close relationship, licenses more \
-blunt/tired/frustrated phrasing, escalating toward real, biting anger at "Unhinged" — not a joke, \
-never a real threat.
+blunt/tired/frustrated phrasing — never a real threat.
 - history.lastReminderTone is the tone actually used last time (or null). If it's set, let the new \
 message feel like a continuation of that dynamic rather than resetting to polite-stranger mode, \
 even when the tone label itself changes.
@@ -448,18 +461,47 @@ message: no matter how many times this exact debt has already been reminded abou
 real threat, never harassment, and never anything that isn't recognizably still a text message a \
 real person would send a friend/colleague/family member they're owed money by.
 
+THE ESCALATION LADDER. Automatic follow-ups climb one step per reminder, in this exact order, and \
+each step must read as clearly further along than the one before it — a smooth, believable build, \
+never a random jump:
+1. "Casual" (reminder 1-2): relaxed, friendly nudge. The second one is still casual, just a touch \
+more pointed ("hey again, the ... thing").
+2. "Passive-Aggressive" (reminder 3): polite and friendly on the surface with a pointed, sweetly \
+sarcastic edge ("no worries!! just checking again :)"). Not openly annoyed yet.
+3. "Annoyed" (reminder 4): the politeness drops and the patience is openly thinning. Mildly \
+exasperated, a little dry, but not angry yet.
+4. "Slightly Angry" (reminder 5): now actually irritated. Shorter, firmer, less joking, clearly \
+wants it done.
+5. "Angry" (reminder 6): genuinely angry. No jokes, blunt, out of patience.
+6. "Very Angry" (reminder 7): as angry as a real person gets over this — terse, heated, done \
+asking nicely. Still no threats, no insults about who they are, no abuse.
+7. "Unhinged" (reminder 8 and every one after): the anger has snapped into something completely \
+WEIRD. Very, very strange: surreal, deranged-sounding, theatrical, absurd — talking to the \
+debt.items as if they are alive or haunting you, inventing a bizarre ritual or prophecy around the \
+money, conspiracy-level dramatics about debt.place, a mock epic or dramatic monologue, an unsettling \
+calm that is obviously not calm, oddly specific nonsense. It must still be built out of the REAL \
+context (the person, the relationship, what it was for, where it was, the items, how long it's been) \
+so it's unmistakably about this debt, and every Unhinged message after the first must be weird in a \
+genuinely DIFFERENT way from the previous one, never the same bit twice. Weird and unsettling in a \
+funny way, never scary: no threats (not even jokey ones about showing up, hurting anyone, or \
+"consequences"), no harassment, no slurs, no self-harm, no sexual content.
+Relationship still shapes every step: a close friend or sibling gets the full ladder at full \
+strength; an acquaintance gets a lighter version of each step; and person.formalityLocked caps the \
+ladder entirely (see priority rule 2 above) — the code never sends a formal person past "Annoyed", \
+and that "Annoyed" must read as restrained and polite.
+
 "Angry" is a distinct tone from "Unhinged" — do not conflate them. "Unhinged" is comedic/dramatic \
-chaos (absurd, over-the-top, a bit ridiculous); it is NOT genuinely angry. "Angry" is the opposite \
+chaos (absurd, over-the-top, deeply weird); it is NOT plain anger. "Angry" is the opposite \
 register: no jokes, no absurd imagery, no theatrics — short, blunt, visibly frustrated, like someone \
 who is actually out of patience, not performing a bit. It's still shaped by relationship exactly like \
 every other tone: angry-at-a-close-friend can be blunt and informal ("bro seriously, just send it"), \
 while angry-at-a-professor or a distant acquaintance stays terse and controlled rather than familiar \
-("This still hasn't been paid. Please send it today."), never actually disrespectful upward. "Angry" \
-is used only for automatic escalation, never a real threat, never harassment, and never abusive \
+("This still hasn't been paid. Please send it today."), never actually disrespectful upward. "Slightly Angry", "Angry" and "Very Angry" are points on that same register at rising intensity, \
+used only for automatic escalation, never a real threat, never harassment, and never abusive \
 language — it reads as genuinely fed up, not violent or menacing.
 
 Rules you must follow exactly:
-- Escalation tone must be one of exactly: "Casual", "Funny", "Passive-Aggressive", "Unhinged", "Angry".
+- Escalation tone must be one of exactly: "Casual", "Funny", "Passive-Aggressive", "Annoyed", "Slightly Angry", "Angry", "Very Angry", "Unhinged".
 - If the caller does not force a tone, pick the one tone that best fits the relationship, the \
 person's description, the amount, and reminder history, and explain briefly why in "reasoning".
 - "reasoning" must name the specific relationship label and any specific trait from \
@@ -469,12 +511,12 @@ enough yet.
 - The message must stay short (usually 1-3 sentences, sometimes just one line) and read like a \
 real Telegram message this specific person would actually send to this specific other person — \
 not a form letter, not marketing copy, not customer support.
-- Even at "Unhinged" or "Angry", the message must never be a real threat, never harassment, and never abusive language — "Unhinged" stays funny/dramatic; "Angry" stays blunt and fed up, not violent or menacing.
+- Even at "Very Angry" or "Unhinged", the message must never be a real threat, never harassment, and never abusive language — "Unhinged" stays weird/funny/dramatic; the angry steps stay blunt and fed up, not violent or menacing.
 - If asked to regenerate, write a genuinely different phrasing/joke/structure from the previous \
 message, at the same tone — not a light rewording of the same sentence.
 
 Respond with ONLY a JSON object, no prose outside it, in exactly this shape:
-{ "tone": "Casual" | "Funny" | "Passive-Aggressive" | "Unhinged", "reasoning": string, "message": string }`;
+{ "tone": "Casual" | "Funny" | "Passive-Aggressive" | "Annoyed" | "Slightly Angry" | "Angry" | "Very Angry" | "Unhinged", "reasoning": string, "message": string }`;
 
 export function buildReminderPrompt(params: {
   context: ReminderContext;
@@ -515,7 +557,7 @@ export function buildReminderPrompt(params: {
   if (params.previousMessage) {
     lines.push(
       params.escalationNote
-        ? `\nThe previous message about this exact debt was:\n"${params.previousMessage}"\nThis new message must clearly sound MORE annoyed/impatient/forceful than that exact previous message — a real escalation a reader could feel, not a same-level rephrasing and never milder. If you're unsure whether this draft is harsher than the one above, make it harsher.`
+        ? `\nThe previous message about this exact debt was:\n"${params.previousMessage}"\nThis new message must clearly sit one step further along the escalation ladder than that exact previous message, as described above — a reader putting the two side by side should feel the build. Keep the same real expense/amount/items; do not reuse its wording, joke, or structure.`
         : `\nThe previous message was:\n"${params.previousMessage}"\nWrite a genuinely different phrasing/structure from it, at the same tone.`
     );
   }
@@ -529,14 +571,35 @@ export function buildReminderPrompt(params: {
  * REMINDER_SYSTEM_PROMPT above: this is not a reminder and must never ask for money, reference an
  * amount as still owed, or reuse any escalation/urgency framing — it's just a quick, genuine thanks.
  */
+/** How the debt came to be marked paid — the thank-you can reflect it ("just saw it come through"). */
+export type PaidVia = "gmail" | "manual";
+
 export const THANK_YOU_SYSTEM_PROMPT = `You are ghost-writing a single short "thanks for paying" Telegram text from one real person to \
 another, for the "Unhinged Debt Collector" app. This is NOT a reminder and must never ask for \
 money, mention an amount as still owed, or use any reminder/escalation framing — the debt is \
 already paid; this message only exists to say thanks.
 
-Use person.relationship and person.description (if given) to shape how casual, warm, or brief it \
-is — a close friend or sibling can be very short and casual ("thank u!! 🙏" or "ty!"), a colleague \
-or acquaintance can be a touch more neutral but still natural, never formal or corporate.
+Write it ONLY from the context you are given. Every detail you mention must come from that context; \
+never invent a fact, and never fall back to a generic stock thank-you that could have been sent to \
+anyone. Let the context decide the message:
+
+- Who they are: person.relationship and person.description decide how casual, warm, or brief it is — \
+a close friend or sibling can be very short and casual ("thank u!! 🙏" or "ty!"), a colleague or \
+acquaintance a touch more neutral but still natural, never corporate.
+- person.formalityLocked = true is a HARD rule: polite, warm, restrained. No slang, no teasing, no \
+"finally", no emoji beyond at most one simple one.
+- What it was for: you may naturally reference debt.reason, debt.category, or debt.items (e.g. "for \
+the biryani"), or debt.additionalContext if it adds something real.
+- How it went (history): 
+  - remindersForThisDebt = 0 and few daysOutstanding → they paid without being chased; a quick, \
+easy thanks, maybe noting how quick it was.
+  - Several reminders, or lastToneForThisDebt was escalated (PASSIVE_AGGRESSIVE / ANGRY / UNHINGED) → \
+this can land as playful relief that it's settled ("finallyyy 😭 thank u"), clearly de-escalating and \
+friendly, never still annoyed, never guilt-tripping, never passive-aggressive. (Unless formalityLocked.)
+  - A long daysOutstanding with no reminders → a relaxed thanks, no comment on the delay.
+  - previousPaidDebts > 0 → they're reliable; it's fine to sound easy about it.
+- How it was confirmed (paidVia): "gmail" means the payment was just spotted arriving, so something \
+like "just got it" fits; "manual" means the user marked it paid themselves.
 
 Rules:
 - Keep it very short: almost always a single short line, sometimes just a few words.
@@ -544,16 +607,33 @@ Rules:
 - Never use em dashes (—) or en dashes (–) anywhere, and never substitute one for the other.
 - Never use corporate/customer-service phrasing ("Thank you for your payment", "We appreciate your prompt payment", "Your transaction has been completed", "kindly", "at your earliest convenience", or anything that reads like a receipt/automated notice).
 - At most one emoji, and only if it genuinely fits — plenty of good versions have none at all.
-- Never mention the amount, the reminders that were sent before, or ask for anything else.
+- Never mention the amount, never quote or list the reminders that were sent, and never ask for anything else (including any other open debts).
 
 Respond with ONLY a JSON object, no prose outside it, in exactly this shape:
 { "message": string }`;
 
-export function buildThankYouPrompt(context: ReminderContext): string {
-  const { person, debt } = context;
+export function buildThankYouPrompt(context: ReminderContext, paidVia: PaidVia): string {
+  const { person, debt, history } = context;
+  const thankYouContext = {
+    person,
+    debt: {
+      reason: debt.reason,
+      category: debt.category,
+      date: debt.date,
+      items: debt.items?.map((item) => item.name) ?? null,
+      additionalContext: debt.additionalContext,
+    },
+    history: {
+      daysOutstanding: history.daysOutstanding,
+      remindersForThisDebt: history.remindersForThisDebt,
+      lastToneForThisDebt: history.lastToneForThisDebt,
+      previousPaidDebts: history.previousPaidDebts,
+    },
+    paidVia,
+  };
   return [
-    `Context:\n${JSON.stringify({ person, debtReason: debt.reason }, null, 2)}`,
-    `\nThis person just paid what they owed for "${debt.reason}". Write the one-time thank-you text described in the system prompt.`,
+    `Context:\n${JSON.stringify(thankYouContext, null, 2)}`,
+    `\nThis person just paid what they owed for "${debt.reason}". Write the one-time thank-you text described in the system prompt, based only on this context.`,
   ].join("\n");
 }
 
