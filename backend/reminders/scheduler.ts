@@ -32,12 +32,38 @@ import { escalationForFollowUp } from "../../skills/escalationSkill.js";
 import { shouldStayFormal } from "../../skills/formalitySkill.js";
 import { getDebtsDueForAutomaticFollowUp, type ExpenseDebt } from "../database/database.js";
 import { getReminderIntervalMinutes } from "./schedulerConfig.js";
+import { groqCooldownRemainingMs } from "../ai/groqClient.js";
 
 /** Never fires more than once per debt at a time, even if a tick takes longer than the poll cadence. */
 const debtsCurrentlyProcessing = new Set<number>();
 
+/**
+ * A debt whose follow-up keeps failing (Groq down, Telegram rejecting the send, missing data) is
+ * retried after 1, 2, 4, 8… minutes, capped at 30, instead of on every 15s poll — the old behavior
+ * retried one failing debt ~240 times an hour and burned the whole daily Groq token budget. Cleared
+ * as soon as that debt succeeds. In-memory only: a restart simply retries once, then backs off again.
+ */
+const failureBackoff = new Map<number, { failures: number; nextAttemptMs: number }>();
+const BASE_BACKOFF_MS = 60_000;
+const MAX_BACKOFF_MS = 30 * 60_000;
+
+function recordFailure(debtId: number): void {
+  const failures = (failureBackoff.get(debtId)?.failures ?? 0) + 1;
+  const delayMs = Math.min(BASE_BACKOFF_MS * 2 ** (failures - 1), MAX_BACKOFF_MS);
+  failureBackoff.set(debtId, { failures, nextAttemptMs: Date.now() + delayMs });
+  console.error(`[reminder-scheduler] Debt ${debtId} failed ${failures} time(s) in a row — next try in ${Math.round(delayMs / 60_000)} min.`);
+}
+
+function isBackingOff(debtId: number): boolean {
+  const entry = failureBackoff.get(debtId);
+  return Boolean(entry && Date.now() < entry.nextAttemptMs);
+}
+
+/** Logged once per Groq pause rather than on every 15s poll. */
+let loggedGroqPause = false;
+
 async function processDebt(userId: number, debtId: number): Promise<void> {
-  if (debtsCurrentlyProcessing.has(debtId)) return;
+  if (debtsCurrentlyProcessing.has(debtId) || isBackingOff(debtId)) return;
   debtsCurrentlyProcessing.add(debtId);
   try {
     const debt = await debtSkill.getDebt(userId, debtId);
@@ -81,20 +107,35 @@ async function processDebt(userId: number, debtId: number): Promise<void> {
 
     const result = await agent.sendReminder(userId, withDraft, person);
     if (result.success) {
+      failureBackoff.delete(debtId);
       console.log(
         `[reminder-scheduler] Sent automatic follow-up (stage ${escalation.stage}, tone ${escalation.tone}) for debt ${debtId}.`
       );
     } else {
       console.error(`[reminder-scheduler] Automatic follow-up send failed for debt ${debtId}: ${result.error}`);
+      recordFailure(debtId);
     }
   } catch (error) {
     console.error(`[reminder-scheduler] Failed to process debt ${debtId}:`, error);
+    recordFailure(debtId);
   } finally {
     debtsCurrentlyProcessing.delete(debtId);
   }
 }
 
 export async function runReminderSchedulerTick(): Promise<void> {
+  // Every follow-up needs Groq to write the message — while Groq has asked us to wait (e.g. the daily
+  // token limit is used up), don't even try. Due debts are simply picked up on the first tick after.
+  const groqPausedMs = groqCooldownRemainingMs();
+  if (groqPausedMs > 0) {
+    if (!loggedGroqPause) {
+      console.log(`[reminder-scheduler] Groq is rate-limited — pausing follow-ups for ${Math.ceil(groqPausedMs / 60_000)} min.`);
+      loggedGroqPause = true;
+    }
+    return;
+  }
+  loggedGroqPause = false;
+
   const intervalMinutes = getReminderIntervalMinutes();
   const cutoffIso = new Date(Date.now() - intervalMinutes * 60_000).toISOString();
 

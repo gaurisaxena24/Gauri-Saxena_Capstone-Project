@@ -22,6 +22,37 @@ function getTextModel(): string {
   return process.env.GROQ_TEXT_MODEL || DEFAULT_TEXT_MODEL;
 }
 
+/**
+ * App-wide Groq pause. When Groq answers 429 (e.g. the daily token limit is used up), every caller —
+ * the reminder scheduler, message generation, thank-you messages, expense reading, the Gmail AI
+ * fallback — stops hitting Groq until the wait Groq itself asked for has passed, and fails
+ * instantly instead. Without this, the reminder scheduler retried the same debt every few seconds
+ * and re-drained the daily budget the moment any of it freed up.
+ */
+let cooldownUntilMs = 0;
+const DEFAULT_RATE_LIMIT_WAIT_MS = 60_000;
+
+/** Reads Groq's own wait from a 429: "Please try again in 7m26.4s" / "1h2m" / "11.99s" / "450ms",
+ * else the Retry-After header (seconds). Null if neither says. */
+export function parseGroqRetryDelayMs(message: string, retryAfterHeader?: string | null): number | null {
+  const match = message.match(/try again in\s+((?:[\d.]+(?:h|ms|m|s))+)/i);
+  if (match) {
+    let ms = 0;
+    for (const [, value, unit] of match[1].matchAll(/([\d.]+)(h|ms|m|s)/gi)) {
+      const n = Number(value);
+      ms += unit === "h" ? n * 3_600_000 : unit === "m" ? n * 60_000 : unit === "s" ? n * 1_000 : n;
+    }
+    if (ms > 0) return Math.ceil(ms);
+  }
+  const header = Number(retryAfterHeader);
+  return Number.isFinite(header) && header > 0 ? header * 1_000 : null;
+}
+
+/** How long until Groq may be called again (0 if not paused). */
+export function groqCooldownRemainingMs(): number {
+  return Math.max(0, cooldownUntilMs - Date.now());
+}
+
 async function callChat(params: {
   model: string;
   system: string;
@@ -38,6 +69,13 @@ async function callChat(params: {
   reasoningEffort?: "low" | "medium" | "high";
 }): Promise<string> {
   const apiKey = getGroqApiKey();
+
+  const pausedMs = groqCooldownRemainingMs();
+  if (pausedMs > 0) {
+    // Same "rate limit ... try again in Ns" wording Groq uses, so existing rate-limit handling
+    // (skills/messageDraftSkill.ts) recognizes it — but no request is actually sent.
+    throw new AiRequestError(`Groq rate limit reached — AI is paused. Please try again in ${Math.ceil(pausedMs / 1000)}s.`);
+  }
 
   if (process.env.NODE_ENV !== "production") {
     const contentKind = Array.isArray(params.userContent) ? "multimodal (text + image)" : "text";
@@ -79,6 +117,11 @@ async function callChat(params: {
     const message =
       typeof data.error === "string" ? data.error : (data.error?.message ?? rawBody.slice(0, 300));
     console.error(`[Groq] ${response.status} response body:`, rawBody.slice(0, 1000));
+    if (response.status === 429) {
+      const waitMs = parseGroqRetryDelayMs(message ?? "", response.headers.get("retry-after")) ?? DEFAULT_RATE_LIMIT_WAIT_MS;
+      cooldownUntilMs = Math.max(cooldownUntilMs, Date.now() + waitMs);
+      console.error(`[Groq] Rate-limited — pausing all Groq calls for ${Math.ceil(waitMs / 1000)}s.`);
+    }
     throw new AiRequestError(message || `Groq returned ${response.status}`);
   }
 
