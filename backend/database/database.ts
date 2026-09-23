@@ -322,21 +322,31 @@ function ensureSchema(): Promise<void> {
         END IF;
       END $$;
     `);
+    // NOTE: adding a UNIQUE constraint that already exists raises Postgres error 42P07
+    // (duplicate_table — it's the backing index that collides), not 42710 (duplicate_object) as a
+    // naive `EXCEPTION WHEN duplicate_object` guard would assume; that mismatch let this exact
+    // statement crash every boot after the first (caught once in production — see BUILD_LOG.md).
+    // An explicit `pg_constraint` existence check sidesteps the exception-class question entirely.
     await db.query(`
       DO $$ BEGIN
-        ALTER TABLE people ADD CONSTRAINT people_user_telegram_username_key UNIQUE (user_id, telegram_username);
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'people_user_telegram_username_key') THEN
+          ALTER TABLE people ADD CONSTRAINT people_user_telegram_username_key UNIQUE (user_id, telegram_username);
+        END IF;
+      END $$;
     `);
 
     // verification_code had no uniqueness constraint at all — harmless odds (~1 in a billion) in a
     // single-user app, but a real cross-tenant collision risk now that multiple app-users' contacts
     // share one global code space (Telegram's incoming message can't know which tenant sent it in
     // advance, so the lookup is deliberately global — see getPersonByVerificationCode — which is
-    // exactly why the code itself must be guaranteed unique).
+    // exactly why the code itself must be guaranteed unique). Same existence-check style as above,
+    // for the same reason (42P07, not 42710, on a re-add).
     await db.query(`
       DO $$ BEGIN
-        ALTER TABLE people ADD CONSTRAINT people_verification_code_key UNIQUE (verification_code);
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'people_verification_code_key') THEN
+          ALTER TABLE people ADD CONSTRAINT people_verification_code_key UNIQUE (verification_code);
+        END IF;
+      END $$;
     `);
   })();
   return schemaReady;
