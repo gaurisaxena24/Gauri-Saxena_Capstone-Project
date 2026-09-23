@@ -1221,6 +1221,72 @@ this session's per-turn figures).
 
 ---
 
+## 2026-09-23 (2)
+### Task: Fix a second production crash-loop (wrong Postgres exception class) found immediately after the above deploy
+
+**What I asked Claude Code to do:** Continuation of the same task above — after the first migration
+fix deployed and showed a clean `[db] Connected to Postgres and schema is up to date.` boot, this
+pass then pushed the BUILD_LOG entry for that fix (a docs-only commit), which triggered Railway's
+normal auto-redeploy. That redeploy crashed production again with a *different* error.
+
+**What Claude Code did:**
+- `GET /api/health` returned `502 {"message":"Application failed to respond"}` after the BUILD_LOG
+  commit's auto-deploy. `railway logs --deployment` showed: `error: relation
+  "people_user_telegram_username_key" already exists` (Postgres code `42P07`) on `ALTER TABLE people
+  ADD CONSTRAINT people_user_telegram_username_key UNIQUE (user_id, telegram_username)`.
+- Diagnosed: this statement (and the near-identical one for `people_verification_code_key`, both
+  pre-existing code from the original multi-tenant change, not something introduced by the previous
+  fix in this pass) was wrapped in `DO $$ BEGIN ... EXCEPTION WHEN duplicate_object THEN NULL; END
+  $$;` as an idempotency guard. Postgres actually raises `42P07` (`duplicate_table` — the
+  constraint's *backing index* is what collides) when re-adding a UNIQUE constraint that already
+  exists, not `42710` (`duplicate_object`) as that guard assumed — so the guard never actually
+  caught anything. It silently "worked" the first time each constraint didn't exist yet (during the
+  previous deploy in this same pass), then crashed on every boot after that, including this one.
+- Replaced both guards with an explicit `IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname =
+  '...')` check around the `ADD CONSTRAINT`, matching the dynamic `pg_constraint` catalog lookup
+  style already used a few lines above (for dropping the *old* telegram_username constraint) —
+  sidesteps the exception-class question entirely instead of trying to guess the right one. Grepped
+  the rest of `backend/database/database.ts` for any other `EXCEPTION WHEN duplicate_object` guard —
+  none found.
+- `npx tsc --noEmit -p .`: clean. Committed as `fa37d61` on `assesment-2&3-gauri`, pushed, merged
+  into `main` (`cfc6a1b`), pushed `main`, and polled `railway status` until `Online`.
+- Confirmed via `railway logs --deployment` that this boot was clean
+  (`[db] Connected to Postgres and schema is up to date.` through to the API listening, no errors)
+  and `GET /api/health` returned `200` again. Then, specifically because the previous bug only
+  surfaced on a *second* boot (first boot creates the constraint and succeeds; the crash only showed
+  up on the next one), forced one more restart with `railway redeploy -y` (same build, no new
+  commit, so it exercises `ensureSchema()` fresh in a brand-new process against a database that now
+  already has both constraints) to catch any other "only works once" migration bug before calling
+  this settled. That third boot was also clean and `/api/health` again returned `200`.
+
+**Files created/modified:**
+- `backend/database/database.ts` (the exception-class fix)
+- `BUILD_LOG.md` (this entry)
+
+**Result:** Production is on `main` at `cfc6a1b`, confirmed `Online` across three consecutive boots
+(the fix's own deploy, plus one forced extra restart), with clean `[db]` startup logs and a healthy
+`/api/health` each time.
+
+**Testing / verification:**
+- `npx tsc --noEmit -p .`: clean.
+- `railway logs --deployment` inspected after each of three boots on this fixed code, all clean.
+- `GET /api/health` returned `200` with the expected JSON body after each of those three boots.
+- Same scope limits as the entry above: no local Postgres/OAuth credentials in this environment, no
+  direct production database queries performed, and end-to-end login/session/Gmail testing was left
+  to the calling session against the now-stable production deployment.
+
+**Claude Code token usage:** Not available (see the automatic per-turn token usage log below).
+
+**Notes / issues:** This second bug was pre-existing in the originally-reviewed change (not
+introduced by the first hotfix in this pass) and had gone uncaught by the prior manual line-by-line
+audit and by the first deploy, because it can only manifest on a *second* boot against a database
+where the constraint already exists — a scenario that specific audit had no way to exercise without
+a real, already-migrated database. Worth remembering for any future idempotent-migration review on
+this codebase: re-run the migration a second time (or force a redeploy) before trusting a single
+clean boot, since "the first boot didn't crash" doesn't prove the migration is actually idempotent.
+
+---
+
 ## Automatic per-turn token usage log
 
 Everything above this line is the narrative task-by-task log (one entry per unit of work, written
