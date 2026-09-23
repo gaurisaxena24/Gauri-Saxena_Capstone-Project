@@ -94,6 +94,7 @@ export async function buildReminderContext(
       date: expense.expense_date,
       category: expense.category,
       reason: shortReason(expense.description ?? expense.merchant ?? expense.category ?? "a shared expense"),
+      place: expense.merchant ?? null,
       shareMode: debt.share_mode ?? "FULL",
       additionalContext: debt.additional_context,
       desiredAction: debt.desired_action,

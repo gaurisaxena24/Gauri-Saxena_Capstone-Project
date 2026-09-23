@@ -207,7 +207,7 @@ export async function scanUserGmailForPayments(user: UserRecord): Promise<void> 
           const matches = await findUnpaidDebtsByAmount(user.id, classification.amount);
           const matchedDebt = await resolveMatch(user.id, matches, classification.payerIdentifier);
           if (matchedDebt) {
-            await agent.markDebtPaid(user.id, matchedDebt.id);
+            await agent.markDebtPaid(user.id, matchedDebt.id, "gmail");
             console.log(
               `[gmail-scan] Matched payment email to debt ${matchedDebt.id} (₹${classification.amount}) for user ${user.id} — marked paid.`
             );
