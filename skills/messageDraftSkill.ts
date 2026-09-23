@@ -19,7 +19,7 @@
  * of it. Re-verified 3/3 successes on the exact same prompt after this fix.
  */
 
-import { callGroqText } from "../backend/ai/groqClient.js";
+import { callGroqText, parseGroqRetryDelayMs } from "../backend/ai/groqClient.js";
 import {
   AiRequestError,
   REMINDER_SYSTEM_PROMPT,
@@ -56,12 +56,25 @@ function isJsonGenerationFailure(error: unknown): boolean {
   return error instanceof AiRequestError && /json/i.test(error.message);
 }
 
-/** Extracts Groq's own "Please try again in 11.99s" delay, if this was a rate-limit error. */
+/** Groq's own wait from a rate-limit error ("Please try again in 11.99s" / "7m26.4s"), if it was one. */
 function rateLimitWaitMs(error: unknown): number | null {
   if (!(error instanceof AiRequestError) || !/rate limit/i.test(error.message)) return null;
-  const match = error.message.match(/try again in ([\d.]+)s/i);
-  const seconds = match ? Number(match[1]) : 5;
-  return Math.min(Math.ceil(seconds * 1000) + 250, MAX_RATE_LIMIT_WAIT_MS);
+  return parseGroqRetryDelayMs(error.message) ?? 5_000;
+}
+
+/** Only a short, per-minute style limit is worth waiting out in-request; a long one (e.g. the daily
+ * token limit, "try again in 7m26s") fails straight away instead of retrying into the same wall. */
+function shouldRetryAfter(waitMs: number): boolean {
+  return waitMs <= MAX_RATE_LIMIT_WAIT_MS;
+}
+
+function rateLimitedError(error: unknown): AiRequestError {
+  const waitMs = rateLimitWaitMs(error) ?? 0;
+  if (waitMs > MAX_RATE_LIMIT_WAIT_MS) {
+    const minutes = Math.ceil(waitMs / 60_000);
+    return new AiRequestError(`Groq's AI limit is used up for now — try again in about ${minutes} minute${minutes === 1 ? "" : "s"}.`);
+  }
+  return new AiRequestError("Groq's rate limit is briefly maxed out — please wait a few seconds and try again.");
 }
 
 function sleep(ms: number): Promise<void> {
@@ -91,15 +104,14 @@ export async function draftReminderMessage(params: {
       lastError = error;
       const rateLimitWait = rateLimitWaitMs(error);
       if (rateLimitWait !== null) {
-        if (attempt < MAX_ATTEMPTS) await sleep(rateLimitWait);
+        if (!shouldRetryAfter(rateLimitWait)) break;
+        if (attempt < MAX_ATTEMPTS) await sleep(rateLimitWait + 250);
         continue;
       }
       if (!isJsonGenerationFailure(error)) throw error; // auth/network errors: fail fast, don't retry
     }
   }
-  if (rateLimitWaitMs(lastError) !== null) {
-    throw new AiRequestError("Groq's rate limit is briefly maxed out — please wait a few seconds and try again.");
-  }
+  if (rateLimitWaitMs(lastError) !== null) throw rateLimitedError(lastError);
   throw lastError instanceof Error
     ? lastError
     : new AiRequestError("Couldn't generate the message. Please try again.");
@@ -121,15 +133,14 @@ export async function draftThankYouMessage(context: ReminderContext): Promise<st
       lastError = error;
       const rateLimitWait = rateLimitWaitMs(error);
       if (rateLimitWait !== null) {
-        if (attempt < MAX_ATTEMPTS) await sleep(rateLimitWait);
+        if (!shouldRetryAfter(rateLimitWait)) break;
+        if (attempt < MAX_ATTEMPTS) await sleep(rateLimitWait + 250);
         continue;
       }
       if (!isJsonGenerationFailure(error)) throw error;
     }
   }
-  if (rateLimitWaitMs(lastError) !== null) {
-    throw new AiRequestError("Groq's rate limit is briefly maxed out — please wait a few seconds and try again.");
-  }
+  if (rateLimitWaitMs(lastError) !== null) throw rateLimitedError(lastError);
   throw lastError instanceof Error
     ? lastError
     : new AiRequestError("Couldn't generate the thank-you message. Please try again.");
