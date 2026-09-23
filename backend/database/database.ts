@@ -257,9 +257,9 @@ function ensureSchema(): Promise<void> {
     await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS gmail_refresh_token TEXT`);
     await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS gmail_connected_at TEXT`);
 
-    // Kept in Settings because the user wants the option available, but nothing in this app
-    // currently consumes it (the AI provider is Groq, and Gmail access is OAuth, not a pasted
-    // key) — encrypted at rest like the Gmail refresh token, for whenever a feature needs it.
+    // Retired: an optional pasted-API-key setting used to live here, replaced by Google OAuth
+    // (the gmail_* columns above) as the only way this app connects to a Google account. Column
+    // kept, unused, rather than dropped — same precedent as the legacy `debts` table above.
     await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS google_api_key TEXT`);
 
     // Tracks which Gmail messages the background payment scanner has already looked at (matched
@@ -1229,14 +1229,6 @@ export async function listUsersWithGmailConnected(): Promise<UserRecord[]> {
   const database = await getDb();
   const { rows } = await database.query<UserRecord>(`SELECT * FROM users WHERE gmail_refresh_token IS NOT NULL`);
   return rows;
-}
-
-/** Optional, per-user, encrypted at rest — kept available in Settings but not currently required
- * or consumed by anything (see the schema comment in ensureSchema). `encryptedKey` must already be
- * encrypted; pass null to clear it. */
-export async function saveGoogleApiKey(userId: number, encryptedKey: string | null): Promise<void> {
-  const database = await getDb();
-  await database.query(`UPDATE users SET google_api_key = $1 WHERE id = $2`, [encryptedKey, userId]);
 }
 
 // ---------------------------------------------------------------------------

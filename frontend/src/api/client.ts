@@ -84,28 +84,7 @@ export interface GmailStatus {
 
 export const getGmailStatus = () => request<GmailStatus>("/gmail/status");
 
-export const verifyGmail = () =>
-  request<{ verified: boolean; emailAddress?: string; reason?: string }>("/gmail/verify", { method: "POST" });
-
 export const disconnectGmail = () => request<{ connected: false }>("/gmail/disconnect", { method: "POST" });
-
-// ---- Optional Google API key -------------------------------------------------
-// Separate from Gmail (which is OAuth-based, not a pasted key) — kept available in Settings but
-// not currently required or consumed by anything.
-
-export interface GoogleApiKeyStatus {
-  configured: boolean;
-  /** False if the server itself isn't set up to store any encrypted secret yet
-   * (CREDENTIAL_ENCRYPTION_KEY unset) — saving is unavailable until then, independent of Gmail. */
-  encryptionConfigured?: boolean;
-  maskedKey?: string;
-}
-
-export const getGoogleApiKeyStatus = () => request<GoogleApiKeyStatus>("/settings/google-api-key");
-
-/** Pass an empty string to clear the saved key. */
-export const saveGoogleApiKey = (apiKey: string) =>
-  request<GoogleApiKeyStatus>("/settings/google-api-key", { method: "POST", body: json({ apiKey }) });
 
 // ---- People -----------------------------------------------------------------
 

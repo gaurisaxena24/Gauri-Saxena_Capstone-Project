@@ -13,7 +13,6 @@ import { debtsRouter } from "./routes/debts.js";
 import { remindersRouter } from "./routes/reminders.js";
 import { dashboardRouter } from "./routes/dashboard.js";
 import { gmailRouter, isGmailConfigured } from "./routes/gmail.js";
-import { settingsRouter } from "./routes/settings.js";
 import { getReminderIntervalMinutes } from "../reminders/schedulerConfig.js";
 import { requireAuth } from "./middleware/requireAuth.js";
 
@@ -51,7 +50,6 @@ export function startApiServer(): void {
   app.use("/api/reminders", requireAuth, remindersRouter);
   app.use("/api/dashboard", requireAuth, dashboardRouter);
   app.use("/api/gmail", requireAuth, gmailRouter);
-  app.use("/api/settings", requireAuth, settingsRouter);
 
   const frontendBuilt = existsSync(FRONTEND_DIST);
   console.error(
