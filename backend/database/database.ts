@@ -54,6 +54,53 @@ function getPool(): Pool {
 
 let schemaReady: Promise<void> | undefined;
 
+/** Adds a nullable `user_id` column to `table` (if not already present), backfills any NULL rows
+ * to whichever user already exists (today's one real user, in the common case), and only then
+ * tightens the column to NOT NULL — but only once every row genuinely has a non-null owner. On a
+ * database where `users` is still completely empty (nobody has ever logged in through the web app
+ * yet), the backfill is a no-op and this deliberately leaves the column nullable rather than
+ * crashing on SET NOT NULL; claimOrphanedLegacyDataIfFirstUser() finishes the job once a real user
+ * exists. Safe to rerun every boot. */
+async function addUserIdColumnAndBackfill(db: Pool, table: string): Promise<void> {
+  await db.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)`);
+  await db.query(
+    `UPDATE ${table} SET user_id = (SELECT id FROM users ORDER BY id ASC LIMIT 1) WHERE user_id IS NULL`
+  );
+  const { rows } = await db.query<{ count: string }>(
+    `SELECT COUNT(*) AS count FROM ${table} WHERE user_id IS NULL`
+  );
+  if (Number(rows[0]?.count ?? 0) === 0) {
+    await db.query(`ALTER TABLE ${table} ALTER COLUMN user_id SET NOT NULL`);
+  }
+}
+
+/** One-time bootstrap, called from upsertUser() right after a genuinely brand-new `users` row is
+ * inserted: if this is truly the very first user this app has ever had log in (current total row
+ * count in `users` is exactly 1 — not just "this particular insert was new", so a second or third
+ * distinct signup later never misattributes another user's data), claim every still-orphaned
+ * people/expenses/expense_debts/reminders row (created before any user_id column existed, or
+ * before anyone had logged in — see addUserIdColumnAndBackfill()) as this user's, then retry
+ * tightening each column to NOT NULL now that every row has an owner. Fully idempotent: a no-op on
+ * every later login once nothing is left NULL. The ALTER attempts are wrapped defensively — a
+ * housekeeping constraint tightening must never make a login fail. */
+async function claimOrphanedLegacyDataIfFirstUser(db: Pool, newUserId: number): Promise<void> {
+  const { rows } = await db.query<{ count: string }>(`SELECT COUNT(*) AS count FROM users`);
+  if (Number(rows[0]?.count ?? 0) !== 1) return;
+
+  const tables = ["people", "expenses", "expense_debts", "reminders"];
+  for (const table of tables) {
+    await db.query(`UPDATE ${table} SET user_id = $1 WHERE user_id IS NULL`, [newUserId]);
+  }
+  for (const table of tables) {
+    try {
+      await db.query(`ALTER TABLE ${table} ALTER COLUMN user_id SET NOT NULL`);
+    } catch {
+      // Non-fatal — every query already scopes by user_id regardless of whether the DB-level
+      // constraint itself is in place yet.
+    }
+  }
+}
+
 /** Idempotent, purely additive schema setup — safe to run on every startup, never drops or truncates. */
 function ensureSchema(): Promise<void> {
   if (schemaReady) return schemaReady;
@@ -235,29 +282,21 @@ function ensureSchema(): Promise<void> {
     // already stores both debt_id and the redundant person_id rather than requiring a join), added
     // nullable, backfilled to today's one real user, then tightened to NOT NULL — safe to rerun
     // every boot since the UPDATE is a no-op once nothing is NULL.
-    await db.query(`ALTER TABLE people ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)`);
-    await db.query(
-      `UPDATE people SET user_id = (SELECT id FROM users ORDER BY id ASC LIMIT 1) WHERE user_id IS NULL`
-    );
-    await db.query(`ALTER TABLE people ALTER COLUMN user_id SET NOT NULL`);
-
-    await db.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)`);
-    await db.query(
-      `UPDATE expenses SET user_id = (SELECT id FROM users ORDER BY id ASC LIMIT 1) WHERE user_id IS NULL`
-    );
-    await db.query(`ALTER TABLE expenses ALTER COLUMN user_id SET NOT NULL`);
-
-    await db.query(`ALTER TABLE expense_debts ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)`);
-    await db.query(
-      `UPDATE expense_debts SET user_id = (SELECT id FROM users ORDER BY id ASC LIMIT 1) WHERE user_id IS NULL`
-    );
-    await db.query(`ALTER TABLE expense_debts ALTER COLUMN user_id SET NOT NULL`);
-
-    await db.query(`ALTER TABLE reminders ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)`);
-    await db.query(
-      `UPDATE reminders SET user_id = (SELECT id FROM users ORDER BY id ASC LIMIT 1) WHERE user_id IS NULL`
-    );
-    await db.query(`ALTER TABLE reminders ALTER COLUMN user_id SET NOT NULL`);
+    //
+    // The backfill target is "whichever user already exists" (ORDER BY id ASC LIMIT 1) — but on a
+    // database where pre-existing people/expenses/etc. rows were created before anyone had ever
+    // logged in through the web app at all (so `users` itself is still empty), that subquery
+    // returns NULL and the backfill is a no-op, which used to make the SET NOT NULL below fail and
+    // crash the whole boot (seen once in production). addUserIdColumnAndBackfill() now only
+    // tightens the constraint once every row genuinely has an owner; if `users` is empty it leaves
+    // the column nullable for this boot. The very first real login then finishes the job — see
+    // claimOrphanedLegacyDataIfFirstUser() below, called from upsertUser() — which backfills these
+    // same rows to that first user and retries the NOT NULL tightening. No data is dropped or
+    // hidden permanently either way, just deferred until there's a real owner to assign it to.
+    await addUserIdColumnAndBackfill(db, "people");
+    await addUserIdColumnAndBackfill(db, "expenses");
+    await addUserIdColumnAndBackfill(db, "expense_debts");
+    await addUserIdColumnAndBackfill(db, "reminders");
 
     // people.telegram_username was globally UNIQUE — that actively blocks multi-tenancy (two
     // different app-users each adding a contact with the same handle would collide), so it's
@@ -1119,13 +1158,20 @@ export async function upsertUser(telegramUsername: string): Promise<UserRecord> 
   const database = await getDb();
   const username = normalizeUsername(telegramUsername);
   const now = new Date().toISOString();
-  await database.query(
+  const { rows: upserted } = await database.query<{ id: number; inserted: boolean }>(
     `INSERT INTO users (telegram_username, created_at, last_login_at)
      VALUES ($1, $2, $3)
-     ON CONFLICT (telegram_username) DO UPDATE SET last_login_at = EXCLUDED.last_login_at`,
+     ON CONFLICT (telegram_username) DO UPDATE SET last_login_at = EXCLUDED.last_login_at
+     RETURNING id, (xmax = 0) AS inserted`,
     [username, now, now]
   );
-  const { rows } = await database.query<UserRecord>(`SELECT * FROM users WHERE telegram_username = $1`, [username]);
+  const { id, inserted } = upserted[0];
+  if (inserted) {
+    // Brand-new user row — see claimOrphanedLegacyDataIfFirstUser() for why this only actually
+    // does anything when it's genuinely the very first user this app has ever had.
+    await claimOrphanedLegacyDataIfFirstUser(database, id);
+  }
+  const { rows } = await database.query<UserRecord>(`SELECT * FROM users WHERE id = $1`, [id]);
   return rows[0];
 }
 
