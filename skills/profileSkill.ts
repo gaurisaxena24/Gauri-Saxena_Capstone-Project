@@ -18,7 +18,7 @@ import {
 
 export interface CreatePersonInput {
   name: string;
-  telegramUsername: string;
+  telegramUsername?: string;
   relationship?: string;
   notes?: string;
   phoneNumber?: string;
@@ -29,7 +29,17 @@ export function addPerson(userId: number, input: CreatePersonInput): Promise<Per
   return createPerson(userId, input);
 }
 
-export function findOrCreatePerson(userId: number, input: CreatePersonInput): Promise<Person> {
+/**
+ * Unlike addPerson (CreatePersonInput, where telegramUsername is now optional), this deliberately
+ * still REQUIRES a username: its whole contract is "look this person up by this exact Telegram
+ * username, or create them if no match exists" (see database.ts's getOrCreatePerson) — a lookup key
+ * that can't itself be optional. Currently unused by any route (kept for parity with the Store
+ * Agent's documented interface — see agent/Agent_info.md), so this doesn't affect existing callers.
+ */
+export function findOrCreatePerson(
+  userId: number,
+  input: { name: string; telegramUsername: string; relationship?: string }
+): Promise<Person> {
   return getOrCreatePerson(userId, input);
 }
 

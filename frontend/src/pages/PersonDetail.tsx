@@ -1,9 +1,16 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { getPerson, removePerson, updatePerson, type PersonDetail as PersonDetailData } from "../api/client";
+import {
+  getPerson,
+  removePerson,
+  updatePerson,
+  type PersonDebtSummary,
+  type PersonDetail as PersonDetailData,
+} from "../api/client";
 import { formatCurrency, formatDate } from "../lib/format";
 import { StatusBadge } from "../components/StatusBadge";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { GmailSyncControl } from "../components/GmailSync";
 
 export function PersonDetail() {
   const { id } = useParams();
@@ -40,6 +47,13 @@ export function PersonDetail() {
 
   useEffect(load, [id]);
 
+  /** Updates only this one debt's row — never refetches the whole person. */
+  function updatePersonDebt(debtId: number, patch: Partial<PersonDebtSummary>) {
+    setPerson((prev) =>
+      prev ? { ...prev, debts: prev.debts.map((d) => (d.id === debtId ? { ...d, ...patch } : d)) } : prev
+    );
+  }
+
   async function saveEdits() {
     if (!person) return;
     setSaving(true);
@@ -73,9 +87,10 @@ export function PersonDetail() {
       );
       return;
     }
+    const label = person.telegramUsername ? `@${person.telegramUsername}` : "no Telegram username";
     if (
       !window.confirm(
-        `Remove ${person.name} (@${person.telegramUsername})?\n\nThis does not affect any of their expenses.`
+        `Remove ${person.name} (${label})?\n\nThis does not affect any of their expenses.`
       )
     ) {
       return;
@@ -104,7 +119,8 @@ export function PersonDetail() {
           <div>
             <h1 className="font-display text-2xl font-bold text-ink">{person.name}</h1>
             <p className="text-sm text-ink-faint">
-              @{person.telegramUsername} · {person.relationship ?? "no relationship set"}
+              {person.telegramUsername ? `@${person.telegramUsername}` : "No Telegram username"} ·{" "}
+              {person.relationship ?? "no relationship set"}
               {person.phoneNumber && <> · {person.phoneNumber}</>}
               {person.keepFormal && <> · restrained/formal reminders</>}
             </p>
@@ -167,7 +183,9 @@ export function PersonDetail() {
             <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-soft">Telegram verification</h2>
             <p className="mt-1 text-sm">
               {person.telegramVerified ? (
-                <span className="font-medium text-[var(--color-success)]">Verified — @{person.telegramUsername} can be sent to</span>
+                <span className="font-medium text-[var(--color-success)]">
+                  Verified — {person.telegramUsername ? `@${person.telegramUsername}` : person.name} can be sent to
+                </span>
               ) : (
                 <span className="text-ink-soft">Not verified yet</span>
               )}
@@ -207,20 +225,12 @@ export function PersonDetail() {
       ) : (
         <div className="space-y-3">
           {person.debts.map((debt) => (
-            <Link
+            <PersonDebtRow
               key={debt.id}
-              to={`/expenses/${debt.expenseId}`}
-              className="flex items-center justify-between rounded-2xl border border-border bg-card p-4 hover:border-ink/30"
-            >
-              <div>
-                <p className="font-medium text-ink">{debt.merchant ?? debt.category ?? "Expense"}</p>
-                <p className="text-sm text-ink-faint">{formatDate(debt.createdAt)}</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <StatusBadge status={debt.status} />
-                <span className="w-20 text-right font-medium text-ink">{formatCurrency(debt.amount)}</span>
-              </div>
-            </Link>
+              debt={debt}
+              onSynced={(summary) => updatePersonDebt(debt.id, { gmailSync: summary })}
+              onGmailMarkedPaid={(paidAt) => updatePersonDebt(debt.id, { status: "PAID", paidAt })}
+            />
           ))}
         </div>
       )}
@@ -233,6 +243,52 @@ export function PersonDetail() {
       >
         {removing ? "Removing…" : "Remove person"}
       </button>
+    </div>
+  );
+}
+
+/**
+ * One row in this person's debt history. The whole row used to be a single <Link> to the parent
+ * expense — split here into the Link (name/date/amount/status, still navigates on click) plus a
+ * separate Sync control underneath, since an interactive Sync button can't be nested inside an
+ * anchor. Only rendered as its own component (rather than inline in a .map) because GmailSyncControl
+ * needs its own per-row state (in-flight guard, expanded/dismissed) — hooks can't live inside a
+ * .map callback.
+ */
+function PersonDebtRow({
+  debt,
+  onSynced,
+  onGmailMarkedPaid,
+}: {
+  debt: PersonDebtSummary;
+  onSynced: (summary: NonNullable<PersonDebtSummary["gmailSync"]>) => void;
+  onGmailMarkedPaid: (paidAt: string | null) => void;
+}) {
+  return (
+    <div className="rounded-2xl border border-border bg-card p-4">
+      <Link
+        to={`/expenses/${debt.expenseId}`}
+        className="flex items-center justify-between gap-3 hover:opacity-80"
+      >
+        <div>
+          <p className="font-medium text-ink">{debt.merchant ?? debt.category ?? "Expense"}</p>
+          <p className="text-sm text-ink-faint">{formatDate(debt.createdAt)}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <StatusBadge status={debt.status} />
+          <span className="w-20 text-right font-medium text-ink">{formatCurrency(debt.amount)}</span>
+        </div>
+      </Link>
+      {debt.status === "UNPAID" && (
+        <div className="mt-2">
+          <GmailSyncControl
+            debtId={debt.id}
+            gmailSync={debt.gmailSync}
+            onSynced={onSynced}
+            onMarkedPaid={onGmailMarkedPaid}
+          />
+        </div>
+      )}
     </div>
   );
 }

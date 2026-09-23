@@ -38,7 +38,9 @@ export type Tone = (typeof TONES)[number];
 export interface ReminderContext {
   person: {
     name: string;
-    telegramUsername: string;
+    /** Null when this contact has no stored Telegram username (verification then only ever happens
+     * via the one-time code) — never invented, and the reminder prompt never mentions/@-mentions it. */
+    telegramUsername: string | null;
     relationship: string;
     /** Who they are / their personality / how they handle money — shapes HOW the message is written, not just facts it states. */
     description: string | null;
@@ -634,5 +636,126 @@ export function buildGmailPaymentPrompt(subject: string, bodyText: string): stri
   "amount": number | null,         // the amount received, if clearly stated — never guessed
   "payer_identifier": string | null, // the payer's name, UPI ID/VPA, or phone number (even partially masked) as stated in the email, if any — never invented
   "confidence": number             // 0-1, your confidence in this classification
+}`;
+}
+
+// ---------------------------------------------------------------------------
+// Gmail Sync — one debt, one user-initiated check (backend/gmail/debtSync.ts,
+// backend/api/routes/debts.ts's POST /:debtId/sync). Distinct from the background scanner's open
+// classification above: this checks one candidate email against ONE specific target debt (a named
+// person, an exact amount, a date) and answers "is this evidence THIS debt was paid", not "is this
+// email a payment notification at all".
+// ---------------------------------------------------------------------------
+
+export type DebtSyncMatchStatus = "PAYMENT_FOUND" | "POSSIBLE_PAYMENT" | "NO_PAYMENT_FOUND";
+
+/** Raw model output — mapped defensively onto `DebtSyncClassification` immediately after parsing,
+ * same convention as `RawGmailPaymentExtraction` above. */
+export interface RawDebtSyncClassification {
+  status: string;
+  confidence: number;
+  reason: string | null;
+}
+
+export interface DebtSyncClassification {
+  status: DebtSyncMatchStatus;
+  confidence: number;
+  reason: string;
+  /** Set when the model couldn't produce valid JSON at all — treated as "skip this candidate", not
+   * as a real NO_PAYMENT_FOUND classification (see backend/gmail/debtSync.ts). */
+  extractionFailed?: boolean;
+}
+
+export function emptyDebtSyncClassification(): DebtSyncClassification {
+  return { status: "NO_PAYMENT_FOUND", confidence: 0, reason: "", extractionFailed: true };
+}
+
+const DEBT_SYNC_STATUSES: readonly DebtSyncMatchStatus[] = ["PAYMENT_FOUND", "POSSIBLE_PAYMENT", "NO_PAYMENT_FOUND"];
+
+export function mapRawDebtSyncClassification(raw: Partial<RawDebtSyncClassification>): DebtSyncClassification {
+  const status: DebtSyncMatchStatus = (DEBT_SYNC_STATUSES as readonly string[]).includes(raw.status as string)
+    ? (raw.status as DebtSyncMatchStatus)
+    : "NO_PAYMENT_FOUND";
+  return {
+    status,
+    confidence: typeof raw.confidence === "number" ? raw.confidence : 0,
+    reason: typeof raw.reason === "string" ? raw.reason.trim() : "",
+  };
+}
+
+export const DEBT_SYNC_SYSTEM_PROMPT = `You check ONE email (subject + body text) from a user's Gmail inbox against ONE specific debt the \
+user is trying to confirm was paid. You are given who owes this debt (a name, and optionally a \
+Telegram username and/or phone number), the exact amount owed, its currency, and the date the \
+underlying expense happened. Decide whether this specific email is evidence that THIS specific \
+person paid THIS specific amount for THIS specific debt — not just any payment email.
+
+Recognize payment language broadly, including (not limited to): paid, payment, transferred, sent, \
+"paid you", "transferred the money", settled, cleared, transaction, UPI, bank transfer, "payment \
+successful". Amounts may be formatted differently than given (850 / ₹850 / INR 850 / Rs. 850 are the \
+same amount) — a formatting difference is not a reason to reject a match, but a different NUMBER is.
+
+Finding the target amount anywhere in the email is NOT enough on its own. Weigh:
+- Whether the sender/payer identified in the email (a name, a UPI ID/VPA, or a phone number, even \
+partially masked) plausibly matches the target person's name, username, or phone number. A close but \
+inexact match (e.g. "Raj K." for a saved "Raj Kumar", or a masked phone number sharing its last few \
+digits) is real, usable evidence — it doesn't need to be a perfect string match.
+- Whether the amount stated matches the target amount (allowing formatting differences only).
+- Whether the email's date is plausibly related to the target expense date. This email was already \
+pre-filtered to a date window around the expense, so treat the date itself as weak supporting \
+evidence rather than a hard requirement.
+- Whether the email is actually about money arriving (not a receipt for something the user bought, \
+not marketing, not an unrelated notification).
+
+Classify as exactly one of:
+- "PAYMENT_FOUND": strong, fairly unambiguous evidence this specific person paid this specific amount \
+for this debt.
+- "POSSIBLE_PAYMENT": relevant and plausibly connected (right amount, or a plausible payer match, or \
+both but weakly) but not confident enough to call it confirmed.
+- "NO_PAYMENT_FOUND": nothing in this email is good evidence this specific debt was paid.
+
+Never invent a fact that isn't in the email. Set "confidence" (0-1) to reflect how sure you are in \
+this specific classification — reserve high confidence (0.8-1) for a genuinely clear, well-matched \
+case; use the mid-range (0.4-0.75) when it's plausible but not certain; low confidence is expected \
+and fine for "NO_PAYMENT_FOUND". "reason" is one short, plain-language sentence (under ~25 words) a \
+person could read directly, e.g. "Sender name and amount both match, and the email says payment was \
+sent" — never a dump of the whole email.
+
+Respond with ONLY valid JSON. No markdown code fences, no prose before or after the JSON. If the \
+email clearly isn't related at all, still return the full JSON shape with "status": \
+"NO_PAYMENT_FOUND" rather than failing to produce valid JSON.`;
+
+export function buildDebtSyncPrompt(params: {
+  personName: string;
+  personUsername: string | null;
+  personPhone: string | null;
+  amount: number;
+  currency: string | null;
+  expenseDate: string | null;
+  emailSubject: string;
+  emailBody: string;
+}): string {
+  const who = [
+    params.personName,
+    params.personUsername ? `Telegram username: ${params.personUsername}` : null,
+    params.personPhone ? `phone: ${params.personPhone}` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  return `Target debt to confirm:
+- Person who owes this: ${who}
+- Amount owed: ${params.amount} ${params.currency ?? ""}
+- Expense date: ${params.expenseDate ?? "unknown"}
+
+Candidate email:
+Subject: ${params.emailSubject}
+
+Body:
+${params.emailBody}
+
+Respond with ONLY this JSON shape, nothing else:
+{
+  "status": "PAYMENT_FOUND" | "POSSIBLE_PAYMENT" | "NO_PAYMENT_FOUND",
+  "confidence": number,   // 0-1
+  "reason": string        // one short, plain-language sentence
 }`;
 }

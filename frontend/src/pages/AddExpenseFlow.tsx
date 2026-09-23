@@ -287,15 +287,15 @@ export function AddExpenseFlow() {
 
   async function addNewPerson() {
     setPersonError(null);
-    if (!newPersonName.trim() || !newPersonUsername.trim()) {
-      setPersonError("Name and Telegram username are required.");
+    if (!newPersonName.trim()) {
+      setPersonError("Name is required.");
       return;
     }
     setSavingPerson(true);
     try {
       const person = await createPerson({
         name: newPersonName.trim(),
-        telegramUsername: newPersonUsername.trim(),
+        telegramUsername: newPersonUsername.trim() || undefined,
         relationship: newPersonRelationship.trim() || undefined,
         phoneNumber: newPersonPhone.trim() || undefined,
         notes: newPersonDescription.trim() || undefined,
@@ -869,7 +869,8 @@ export function AddExpenseFlow() {
                     <div>
                       <p className="font-medium text-ink">{person.name}</p>
                       <p className="text-sm text-ink-faint">
-                        @{person.telegramUsername} · {person.relationship ?? "no relationship set"}
+                        {person.telegramUsername ? `@${person.telegramUsername}` : "No Telegram username"} ·{" "}
+                        {person.relationship ?? "no relationship set"}
                         {person.telegramVerified && <span className="text-[var(--color-success)]"> · verified</span>}
                       </p>
                     </div>
@@ -891,7 +892,12 @@ export function AddExpenseFlow() {
           {addingNewPerson && (
             <div className="space-y-4 rounded-2xl border border-border bg-card p-5">
               <Field label="Name" value={newPersonName} onChange={setNewPersonName} />
-              <Field label="Telegram username" value={newPersonUsername} onChange={setNewPersonUsername} placeholder="rahul123" />
+              <Field
+                label="Telegram username (optional)"
+                value={newPersonUsername}
+                onChange={setNewPersonUsername}
+                placeholder="rahul123 — only needed to send them Telegram reminders"
+              />
               <Field label="Phone number" value={newPersonPhone} onChange={setNewPersonPhone} placeholder="Optional" />
               <Field label="Relationship" value={newPersonRelationship} onChange={setNewPersonRelationship} placeholder="Friend, roommate, coworker…" />
               <label className="block">

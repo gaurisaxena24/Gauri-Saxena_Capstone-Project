@@ -11,11 +11,13 @@ import {
   sendDebtViaTelegram,
   type Expense,
   type ExpenseDebtDetail,
+  type GmailSyncSummary,
 } from "../api/client";
 import { formatCurrency, formatDate, formatDateTime } from "../lib/format";
 import { StatusBadge } from "../components/StatusBadge";
 import { ToneBadge } from "../components/ToneBadge";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { GmailSyncControl } from "../components/GmailSync";
 
 interface DebtActionState {
   sending?: boolean;
@@ -336,6 +338,8 @@ export function Expenses() {
                           onToggleHistory={() => toggleHistory(debt.id)}
                           onSend={() => handleSendReminder(expense.id, debt)}
                           onMarkPaid={() => handleMarkPaid(expense.id, debt)}
+                          onSynced={(summary) => updateDebt(expense.id, debt.id, { gmailSync: summary })}
+                          onGmailMarkedPaid={(paidAt) => updateDebt(expense.id, debt.id, { status: "PAID", paidAt })}
                         />
                       ))}
                     </div>
@@ -419,6 +423,8 @@ function DebtRow({
   onToggleHistory,
   onSend,
   onMarkPaid,
+  onSynced,
+  onGmailMarkedPaid,
 }: {
   debt: ExpenseDebtDetail;
   expanded: boolean;
@@ -430,6 +436,8 @@ function DebtRow({
   onToggleHistory: () => void;
   onSend: () => void;
   onMarkPaid: () => void;
+  onSynced: (summary: GmailSyncSummary) => void;
+  onGmailMarkedPaid: (paidAt: string | null) => void;
 }) {
   const sentReminders = debt.reminders.filter((r) => r.status === "SENT");
   const latestSent = sentReminders[0] ?? null;
@@ -464,6 +472,17 @@ function DebtRow({
         </button>
       ) : (
         <div className="flex items-center justify-between gap-3">{summary}</div>
+      )}
+
+      {debt.status === "UNPAID" && (
+        <div className="mt-1.5">
+          <GmailSyncControl
+            debtId={debt.id}
+            gmailSync={debt.gmailSync}
+            onSynced={onSynced}
+            onMarkedPaid={onGmailMarkedPaid}
+          />
+        </div>
       )}
 
       {expanded && (

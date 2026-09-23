@@ -124,13 +124,15 @@ function phoneNumbersLikelyMatch(savedPhone: string, identifier: string): boolea
  * could plausibly appear in a payment notification, not just the display name.
  */
 function payerIdentifierLikelyMatchesPerson(
-  person: { name: string; telegram_username: string; phone_number: string | null },
+  person: { name: string; telegram_username: string | null; phone_number: string | null },
   payerIdentifier: string
 ): boolean {
   const identifier = payerIdentifier.trim().toLowerCase();
   if (!identifier) return false;
   const name = person.name.trim().toLowerCase();
-  const username = person.telegram_username.trim().toLowerCase();
+  // Only attempt the username-substring match when this contact actually has a stored username —
+  // name and phone-based matching below work independently of it.
+  const username = person.telegram_username?.trim().toLowerCase() ?? "";
   // Deliberately loose (substring either direction) — a UPI app might show "Raj K." for a contact
   // saved as "Raj Kumar", or just their @handle. This only needs to break a tie among debts that
   // already matched on amount, not stand alone as the whole match.

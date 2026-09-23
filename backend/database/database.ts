@@ -127,7 +127,7 @@ function ensureSchema(): Promise<void> {
       CREATE TABLE IF NOT EXISTS people (
           id SERIAL PRIMARY KEY,
           name TEXT NOT NULL,
-          telegram_username TEXT NOT NULL UNIQUE,
+          telegram_username TEXT UNIQUE,
           relationship TEXT,
           created_at TEXT NOT NULL
       );
@@ -215,6 +215,16 @@ function ensureSchema(): Promise<void> {
       );
     `);
 
+    // telegram_username started out required (NOT NULL UNIQUE, see the CREATE TABLE above, which is
+    // itself kept unchanged for an already-existing DB) — a contact can now be saved with no
+    // Telegram handle at all (verification then only happens via the one-time code, never by
+    // username match), so the NOT NULL constraint is dropped here. Safe to rerun: Postgres does not
+    // error when dropping a NOT NULL that's already gone. The UNIQUE constraint itself is untouched
+    // and needs no change — Postgres treats multiple NULLs in a UNIQUE column (or in the later
+    // per-user composite UNIQUE below) as distinct from one another, so any number of people can
+    // share a NULL telegram_username without a conflict.
+    await db.query(`ALTER TABLE people ALTER COLUMN telegram_username DROP NOT NULL`);
+
     // people: extended additively for phone + real Telegram verification.
     await db.query(`ALTER TABLE people ADD COLUMN IF NOT EXISTS notes TEXT`);
     await db.query(`ALTER TABLE people ADD COLUMN IF NOT EXISTS phone_number TEXT`);
@@ -274,6 +284,21 @@ function ensureSchema(): Promise<void> {
           UNIQUE (user_id, message_id)
       );
     `);
+
+    // Per-debt Gmail Sync (the user-initiated "Sync" button — see backend/api/routes/debts.ts's
+    // POST /:id/sync, backend/gmail/debtSync.ts). Distinct from gmail_processed_messages above,
+    // which belongs to the *background* scanner: this stores only the single latest result of a
+    // targeted, single-debt check, so the UI can show "Last checked: <time>" without re-syncing.
+    // Deliberately no full email body — just enough to show the user which email it was and why,
+    // and to detect a stale-but-still-shown-result on the next real sync.
+    await db.query(`ALTER TABLE expense_debts ADD COLUMN IF NOT EXISTS gmail_sync_status TEXT`);
+    await db.query(`ALTER TABLE expense_debts ADD COLUMN IF NOT EXISTS gmail_sync_checked_at TEXT`);
+    await db.query(`ALTER TABLE expense_debts ADD COLUMN IF NOT EXISTS gmail_sync_confidence DOUBLE PRECISION`);
+    await db.query(`ALTER TABLE expense_debts ADD COLUMN IF NOT EXISTS gmail_sync_email_id TEXT`);
+    await db.query(`ALTER TABLE expense_debts ADD COLUMN IF NOT EXISTS gmail_sync_email_date TEXT`);
+    await db.query(`ALTER TABLE expense_debts ADD COLUMN IF NOT EXISTS gmail_sync_sender TEXT`);
+    await db.query(`ALTER TABLE expense_debts ADD COLUMN IF NOT EXISTS gmail_sync_subject TEXT`);
+    await db.query(`ALTER TABLE expense_debts ADD COLUMN IF NOT EXISTS gmail_sync_reason TEXT`);
 
     // --- Per-user data isolation --------------------------------------------------------------
     // This app was single-user until now (see the removed getPrimaryUser doc comment) — every
@@ -411,7 +436,7 @@ export interface Person {
   id: number;
   user_id: number;
   name: string;
-  telegram_username: string;
+  telegram_username: string | null;
   relationship: string | null;
   notes: string | null;
   phone_number: string | null;
@@ -432,7 +457,7 @@ export async function createPerson(
   userId: number,
   input: {
     name: string;
-    telegramUsername: string;
+    telegramUsername?: string;
     relationship?: string;
     notes?: string;
     phoneNumber?: string;
@@ -441,7 +466,11 @@ export async function createPerson(
 ): Promise<Person> {
   const database = await getDb();
   const created_at = new Date().toISOString();
-  const username = normalizeUsername(input.telegramUsername);
+  // Telegram username is now optional — a contact with none stored is inserted as NULL (never
+  // coerced to an empty string, which would collide with every other usernameless contact under the
+  // UNIQUE constraint; NULL is what lets Postgres treat each of them as distinct). They can still be
+  // verified later via the one-time code path, which never depends on a stored username.
+  const username = input.telegramUsername?.trim() ? normalizeUsername(input.telegramUsername) : null;
   for (let attempt = 1; attempt <= MAX_CODE_GENERATION_ATTEMPTS; attempt++) {
     try {
       const { rows } = await database.query<{ id: number }>(
@@ -854,7 +883,19 @@ export interface ExpenseDebt {
   selected_items_json: string | null;
   created_at: string;
   paid_at: string | null;
+  /** Latest (and only ever "latest") result of a user-initiated Gmail Sync check — see
+   * updateDebtGmailSync below. Null until the "Sync" button has been used at least once. */
+  gmail_sync_status: DebtGmailSyncStatus | null;
+  gmail_sync_checked_at: string | null;
+  gmail_sync_confidence: number | null;
+  gmail_sync_email_id: string | null;
+  gmail_sync_email_date: string | null;
+  gmail_sync_sender: string | null;
+  gmail_sync_subject: string | null;
+  gmail_sync_reason: string | null;
 }
+
+export type DebtGmailSyncStatus = "PAYMENT_FOUND" | "POSSIBLE_PAYMENT" | "NO_PAYMENT_FOUND";
 
 export async function createExpenseDebt(
   userId: number,
@@ -969,6 +1010,51 @@ export async function setDebtStatus(
     id,
     userId,
   ]);
+  return getExpenseDebt(userId, id);
+}
+
+/**
+ * Persists the single latest result of a user-initiated Gmail Sync check (see
+ * backend/gmail/debtSync.ts) — overwrites whatever was stored before, since only the most recent
+ * check is ever shown ("Last checked: <time>" + "Sync again"). Only called for a real, completed
+ * check (PAYMENT_FOUND / POSSIBLE_PAYMENT / NO_PAYMENT_FOUND); GMAIL_NOT_CONNECTED /
+ * GMAIL_PERMISSION_REQUIRED / SYNC_ERROR never reach here, so a transient failure never clobbers a
+ * previously-stored real result. Never stores a full email body — just enough to show the user
+ * which email it was and why (see the ALTER TABLE comments in ensureSchema).
+ */
+export async function updateDebtGmailSync(
+  userId: number,
+  id: number,
+  patch: {
+    status: DebtGmailSyncStatus;
+    confidence: number | null;
+    emailId: string | null;
+    emailDate: string | null;
+    sender: string | null;
+    subject: string | null;
+    reason: string | null;
+  }
+): Promise<ExpenseDebt | undefined> {
+  const database = await getDb();
+  await database.query(
+    `UPDATE expense_debts
+       SET gmail_sync_status = $1, gmail_sync_checked_at = $2, gmail_sync_confidence = $3,
+           gmail_sync_email_id = $4, gmail_sync_email_date = $5, gmail_sync_sender = $6,
+           gmail_sync_subject = $7, gmail_sync_reason = $8
+     WHERE id = $9 AND user_id = $10`,
+    [
+      patch.status,
+      new Date().toISOString(),
+      patch.confidence,
+      patch.emailId,
+      patch.emailDate,
+      patch.sender,
+      patch.subject,
+      patch.reason,
+      id,
+      userId,
+    ]
+  );
   return getExpenseDebt(userId, id);
 }
 

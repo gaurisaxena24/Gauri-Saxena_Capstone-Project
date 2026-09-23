@@ -15,10 +15,14 @@ import type { Person } from "../backend/database/database.js";
 
 export class TelegramNotVerifiedError extends Error {
   constructor(person: Person) {
-    super(
-      `@${person.telegram_username} hasn't verified their Telegram yet — ask them to send any message ` +
-        `(e.g. "hi") to the bot, then try sending again.`
-    );
+    const label = person.telegram_username ? `@${person.telegram_username}` : person.name;
+    // A contact with no stored Telegram username can only ever be verified via the one-time code
+    // (there's no username for the poller to match an incoming message against), so the guidance
+    // differs from the username case, where any incoming message auto-verifies them.
+    const howTo = person.telegram_username
+      ? `ask them to send any message (e.g. "hi") to the bot`
+      : `ask them to send the verification code shown in the app to the bot`;
+    super(`${label} hasn't verified their Telegram yet — ${howTo}, then try sending again.`);
     this.name = "TelegramNotVerifiedError";
   }
 }
