@@ -237,11 +237,16 @@ export function Settings() {
           <p className="mt-1 text-sm text-ink-faint">
             Not required for Gmail or anything else in the app right now — available if you want to add your own.
           </p>
+          <p className="mt-2 text-xs text-ink-faint">
+            <span className="font-medium text-ink-soft">How this works:</span> nothing in the app uses this key
+            yet. Once a feature does, it will read this exact saved key for your account only — encrypted, never
+            shown again after saving, never a shared key, and never used for anyone else's account.
+          </p>
           <a
             href="https://console.cloud.google.com/apis/credentials"
             target="_blank"
             rel="noreferrer"
-            className="mt-1 inline-block text-xs font-medium text-ink-soft underline decoration-dotted underline-offset-2 hover:text-ink"
+            className="mt-1.5 inline-block text-xs font-medium text-ink-soft underline decoration-dotted underline-offset-2 hover:text-ink"
           >
             How to find your key ↗
           </a>
