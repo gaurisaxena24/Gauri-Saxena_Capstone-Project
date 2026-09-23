@@ -38,6 +38,13 @@ function deriveKey(purpose: string): Buffer {
   return createHmac("sha256", getMasterKey()).update(purpose).digest();
 }
 
+/** Lets a route check upfront and return a clean error instead of `encryptSecret`/`decryptSecret`
+ * throwing mid-request when the operator hasn't set CREDENTIAL_ENCRYPTION_KEY yet. */
+export function isCredentialEncryptionConfigured(): boolean {
+  const raw = process.env.CREDENTIAL_ENCRYPTION_KEY;
+  return Boolean(raw && Buffer.from(raw, "base64").length === 32);
+}
+
 /** Encrypts a plaintext secret. Output is safe to store as a single TEXT column value. */
 export function encryptSecret(plaintext: string): string {
   const key = deriveKey("gmail-token-encryption");

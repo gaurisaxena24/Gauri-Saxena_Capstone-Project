@@ -95,6 +95,9 @@ export const disconnectGmail = () => request<{ connected: false }>("/gmail/disco
 
 export interface GoogleApiKeyStatus {
   configured: boolean;
+  /** False if the server itself isn't set up to store any encrypted secret yet
+   * (CREDENTIAL_ENCRYPTION_KEY unset) — saving is unavailable until then, independent of Gmail. */
+  encryptionConfigured?: boolean;
   maskedKey?: string;
 }
 

@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/build-log-stop.cjs"
+            "command": "node \"$(git rev-parse --show-toplevel)/.claude/hooks/build-log-stop.cjs\""
           }
         ]
       }

@@ -245,39 +245,48 @@ export function Settings() {
             </div>
           )}
 
-          {apiKeyStatus?.configured && (
-            <p className="mt-2 text-sm text-ink-soft">
-              Saved: <span className="font-mono text-ink">{apiKeyStatus.maskedKey}</span>
-            </p>
-          )}
+          {apiKeyStatus?.encryptionConfigured === false ? (
+            <p className="mt-2 text-sm text-ink-faint">Saving a key isn't available on the server yet.</p>
+          ) : (
+            <>
+              {apiKeyStatus?.configured && (
+                <p className="mt-2 text-sm text-ink-soft">
+                  Saved: <span className="font-mono text-ink">{apiKeyStatus.maskedKey}</span>
+                </p>
+              )}
 
-          <div className="mt-3 flex flex-wrap gap-2">
-            <input
-              type="password"
-              value={apiKeyInput}
-              onChange={(e) => setApiKeyInput(e.target.value)}
-              placeholder={apiKeyStatus?.configured ? "Replace key" : "Paste your Google API key"}
-              className="min-w-0 flex-1 rounded-lg border border-border bg-paper px-3 py-2 text-sm text-ink outline-none focus:border-ink"
-            />
-            <button
-              type="button"
-              onClick={() => void submitApiKey(apiKeyInput.trim())}
-              disabled={apiKeySaving || !apiKeyInput.trim()}
-              className="rounded-full bg-ink px-4 py-2 text-xs font-semibold text-paper disabled:opacity-40"
-            >
-              {apiKeySaving ? "Saving…" : "Save"}
-            </button>
-            {apiKeyStatus?.configured && (
-              <button
-                type="button"
-                onClick={() => void submitApiKey("")}
-                disabled={apiKeySaving}
-                className="rounded-full border border-border px-4 py-2 text-xs font-medium text-ink-soft hover:border-[var(--color-danger)]/40 hover:text-[var(--color-danger)] disabled:opacity-40"
-              >
-                Remove
-              </button>
-            )}
-          </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <input
+                  type="password"
+                  value={apiKeyInput}
+                  onChange={(e) => setApiKeyInput(e.target.value)}
+                  placeholder={apiKeyStatus?.configured ? "Replace key" : "AIzaSyD-XXXXXXXXXXXXXXXXXXXXXXXXXXXXX"}
+                  className="min-w-0 flex-1 rounded-lg border border-border bg-paper px-3 py-2 text-sm text-ink outline-none focus:border-ink"
+                />
+                <button
+                  type="button"
+                  onClick={() => void submitApiKey(apiKeyInput.trim())}
+                  disabled={apiKeySaving || !apiKeyInput.trim()}
+                  className="rounded-full bg-ink px-4 py-2 text-xs font-semibold text-paper disabled:opacity-40"
+                >
+                  {apiKeySaving ? "Saving…" : "Save"}
+                </button>
+                {apiKeyStatus?.configured && (
+                  <button
+                    type="button"
+                    onClick={() => void submitApiKey("")}
+                    disabled={apiKeySaving}
+                    className="rounded-full border border-border px-4 py-2 text-xs font-medium text-ink-soft hover:border-[var(--color-danger)]/40 hover:text-[var(--color-danger)] disabled:opacity-40"
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+              <p className="mt-1.5 text-xs text-ink-faint">
+                Looks like <span className="font-mono">AIzaSyD-...</span> — a 39-character key from your Google Cloud project's Credentials page.
+              </p>
+            </>
+          )}
         </div>
 
         <div className="rounded-2xl border border-border bg-card p-5">

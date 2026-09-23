@@ -8,7 +8,7 @@
 
 import { Router } from "express";
 import { getUserById, saveGoogleApiKey } from "../../database/database.js";
-import { decryptSecret, encryptSecret } from "../../lib/credentialCrypto.js";
+import { decryptSecret, encryptSecret, isCredentialEncryptionConfigured } from "../../lib/credentialCrypto.js";
 import type { AuthedRequest } from "../middleware/requireAuth.js";
 
 export const settingsRouter = Router();
@@ -19,16 +19,30 @@ function maskKey(key: string): string {
 }
 
 settingsRouter.get("/google-api-key", async (req, res) => {
+  if (!isCredentialEncryptionConfigured()) {
+    res.json({ configured: false, encryptionConfigured: false });
+    return;
+  }
   const { userId } = req as AuthedRequest;
   const user = await getUserById(userId);
   const configured = Boolean(user?.google_api_key);
   res.json({
     configured,
+    encryptionConfigured: true,
     maskedKey: configured ? maskKey(decryptSecret(user!.google_api_key!)) : undefined,
   });
 });
 
 settingsRouter.post("/google-api-key", async (req, res) => {
+  if (!isCredentialEncryptionConfigured()) {
+    // Clean, specific failure instead of encryptSecret throwing mid-request — this key is stored
+    // encrypted the same way the Gmail refresh token is, so it needs the same server-side setup
+    // (CREDENTIAL_ENCRYPTION_KEY), independent of whether Gmail itself has been configured.
+    res.status(503).json({
+      error: "Saving a key isn't available on the server yet (CREDENTIAL_ENCRYPTION_KEY isn't set).",
+    });
+    return;
+  }
   const { userId } = req as AuthedRequest;
   const apiKey = typeof req.body?.apiKey === "string" ? req.body.apiKey.trim() : "";
   if (!apiKey) {
