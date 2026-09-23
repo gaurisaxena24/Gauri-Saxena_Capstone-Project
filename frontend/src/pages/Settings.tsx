@@ -237,6 +237,14 @@ export function Settings() {
           <p className="mt-1 text-sm text-ink-faint">
             Not required for Gmail or anything else in the app right now — available if you want to add your own.
           </p>
+          <a
+            href="https://console.cloud.google.com/apis/credentials"
+            target="_blank"
+            rel="noreferrer"
+            className="mt-1 inline-block text-xs font-medium text-ink-soft underline decoration-dotted underline-offset-2 hover:text-ink"
+          >
+            How to find your key ↗
+          </a>
 
           {apiKeyBanner && <p className="mt-2 text-sm text-[var(--color-success)]">{apiKeyBanner}</p>}
           {apiKeyError && (
