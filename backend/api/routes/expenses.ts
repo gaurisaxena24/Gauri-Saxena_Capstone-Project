@@ -144,6 +144,25 @@ expensesRouter.get("/", async (req, res) => {
  * instead of navigating anywhere): amount, paid/unpaid status, the generated reminder message, and
  * the full send history all live here, one level down from the expense they belong to.
  */
+/** Shared shape for the persisted result of the last Gmail Sync check on this debt (if any) — see
+ * backend/gmail/debtSync.ts and updateDebtGmailSync in database.ts. Null until "Sync" has been used
+ * at least once on this debt. Same shape as backend/api/routes/debts.ts's own local copy — kept
+ * duplicated (not shared) since every payload-shaping helper in this codebase's route files is
+ * already local to its own file. */
+function toGmailSyncPayload(debt: ExpenseDebt) {
+  if (!debt.gmail_sync_status) return null;
+  return {
+    status: debt.gmail_sync_status,
+    checkedAt: debt.gmail_sync_checked_at,
+    confidence: debt.gmail_sync_confidence,
+    emailId: debt.gmail_sync_email_id,
+    emailDate: debt.gmail_sync_email_date,
+    sender: debt.gmail_sync_sender,
+    subject: debt.gmail_sync_subject,
+    reason: debt.gmail_sync_reason,
+  };
+}
+
 async function toExpenseDebtDetail(userId: number, debt: ExpenseDebt) {
   const [person, reminders] = await Promise.all([
     profileSkill.findPersonById(userId, debt.person_id),
@@ -161,6 +180,7 @@ async function toExpenseDebtDetail(userId: number, debt: ExpenseDebt) {
     messageEdited: Boolean(debt.message_edited),
     createdAt: debt.created_at,
     paidAt: debt.paid_at,
+    gmailSync: toGmailSyncPayload(debt),
     // reminderSkill.historyForDebt returns raw DB rows (snake_case) — mapped to match the same
     // camelCase shape GET /reminders already returns, which the frontend's ReminderSummary expects.
     reminders: reminders.map((r) => ({

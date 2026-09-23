@@ -2,16 +2,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useSettings, type FontSize } from "../context/SettingsContext";
 import { useAuth } from "../context/AuthContext";
-import {
-  disconnectGmail,
-  getGmailStatus,
-  getGoogleApiKeyStatus,
-  getHealth,
-  saveGoogleApiKey,
-  verifyGmail,
-  type GmailStatus,
-  type GoogleApiKeyStatus,
-} from "../api/client";
+import { disconnectGmail, getGmailStatus, getHealth, type GmailStatus } from "../api/client";
 import { formatDateTime } from "../lib/format";
 import { ErrorBanner } from "../components/ErrorBanner";
 
@@ -29,7 +20,6 @@ export function Settings() {
   const [gmailConfigured, setGmailConfigured] = useState(true);
   const [gmailBanner, setGmailBanner] = useState<string | null>(null);
   const [gmailError, setGmailError] = useState<string | null>(null);
-  const [verifying, setVerifying] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
 
   function loadGmailStatus() {
@@ -52,8 +42,8 @@ export function Settings() {
   useEffect(() => {
     const result = searchParams.get("gmail");
     if (!result) return;
-    setGmailBanner(result === "connected" ? "Gmail connected." : null);
-    setGmailError(result === "error" ? "Couldn't connect Gmail. Please try again." : null);
+    setGmailBanner(result === "connected" ? "Google account connected." : null);
+    setGmailError(result === "error" ? "Couldn't connect your Google account. Please try again." : null);
     loadGmailStatus();
     setSearchParams(
       (prev) => {
@@ -66,25 +56,8 @@ export function Settings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, setSearchParams]);
 
-  async function handleVerify() {
-    setVerifying(true);
-    setGmailError(null);
-    setGmailBanner(null);
-    try {
-      const result = await verifyGmail();
-      if (result.verified) {
-        setGmailBanner("Gmail connection verified.");
-        loadGmailStatus();
-      } else if (result.reason === "reconnect_required") {
-        setGmailError("Your Gmail connection has expired. Reconnect below.");
-      } else {
-        setGmailError("Could not verify the connection right now. Please try again.");
-      }
-    } catch (err) {
-      setGmailError(err instanceof Error ? err.message : "Couldn't verify Gmail.");
-    } finally {
-      setVerifying(false);
-    }
+  function goToGoogleOAuth() {
+    window.location.href = "/api/gmail/connect";
   }
 
   async function handleDisconnect() {
@@ -95,37 +68,9 @@ export function Settings() {
       await disconnectGmail();
       setGmail({ connected: false });
     } catch (err) {
-      setGmailError(err instanceof Error ? err.message : "Couldn't disconnect Gmail.");
+      setGmailError(err instanceof Error ? err.message : "Couldn't disconnect.");
     } finally {
       setDisconnecting(false);
-    }
-  }
-
-  const [apiKeyStatus, setApiKeyStatus] = useState<GoogleApiKeyStatus | null>(null);
-  const [apiKeyInput, setApiKeyInput] = useState("");
-  const [apiKeySaving, setApiKeySaving] = useState(false);
-  const [apiKeyError, setApiKeyError] = useState<string | null>(null);
-  const [apiKeyBanner, setApiKeyBanner] = useState<string | null>(null);
-
-  useEffect(() => {
-    getGoogleApiKeyStatus()
-      .then(setApiKeyStatus)
-      .catch((err) => setApiKeyError(err instanceof Error ? err.message : "Couldn't load key status."));
-  }, []);
-
-  async function submitApiKey(value: string) {
-    setApiKeySaving(true);
-    setApiKeyError(null);
-    setApiKeyBanner(null);
-    try {
-      const result = await saveGoogleApiKey(value);
-      setApiKeyStatus(result);
-      setApiKeyInput("");
-      setApiKeyBanner(result.configured ? "Key saved." : "Key removed.");
-    } catch (err) {
-      setApiKeyError(err instanceof Error ? err.message : "Couldn't save the key.");
-    } finally {
-      setApiKeySaving(false);
     }
   }
 
@@ -178,7 +123,13 @@ export function Settings() {
         </div>
 
         <div className="rounded-2xl border border-border bg-card p-5">
-          <h2 className="text-sm font-semibold text-ink">Gmail</h2>
+          <h2 className="text-sm font-semibold text-ink">Google Account Connection</h2>
+          <p className="mt-1 text-sm text-ink-faint">
+            Connect your Google account (via Google's own sign-in — you never type a key here) and the app checks
+            your Gmail every few minutes for payment emails (like a UPI "money received" message). If one matches
+            something someone owes you, that debt is automatically marked Paid and stops getting reminders — you
+            don't have to do anything yourself.
+          </p>
 
           {gmailBanner && <p className="mt-1 text-sm text-[var(--color-success)]">{gmailBanner}</p>}
           {gmailError && (
@@ -188,7 +139,7 @@ export function Settings() {
           )}
 
           {!gmailConfigured ? (
-            <p className="mt-1 text-sm text-ink-faint">Gmail isn't configured on the server yet.</p>
+            <p className="mt-1 text-sm text-ink-faint">Google sign-in isn't configured on the server yet.</p>
           ) : gmail?.connected ? (
             <>
               <p className="mt-1 text-sm text-ink-soft">
@@ -200,11 +151,10 @@ export function Settings() {
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={handleVerify}
-                  disabled={verifying}
-                  className="rounded-full border border-border px-4 py-1.5 text-xs font-medium text-ink-soft hover:border-ink/40 hover:text-ink disabled:opacity-40"
+                  onClick={goToGoogleOAuth}
+                  className="rounded-full border border-border px-4 py-1.5 text-xs font-medium text-ink-soft hover:border-ink/40 hover:text-ink"
                 >
-                  {verifying ? "Checking…" : "Test / Verify"}
+                  Reconnect
                 </button>
                 <button
                   type="button"
@@ -221,63 +171,13 @@ export function Settings() {
               <p className="mt-1 text-sm text-ink-faint">Not connected.</p>
               <button
                 type="button"
-                onClick={() => {
-                  window.location.href = "/api/gmail/connect";
-                }}
+                onClick={goToGoogleOAuth}
                 className="mt-3 rounded-full bg-ink px-5 py-2 text-sm font-semibold text-paper"
               >
-                Connect Gmail
+                Connect Google Account
               </button>
             </>
           )}
-        </div>
-
-        <div className="rounded-2xl border border-border bg-card p-5">
-          <h2 className="text-sm font-semibold text-ink">Google API Key (Optional)</h2>
-          <p className="mt-1 text-sm text-ink-faint">
-            Not required for Gmail or anything else in the app right now — available if you want to add your own.
-          </p>
-
-          {apiKeyBanner && <p className="mt-2 text-sm text-[var(--color-success)]">{apiKeyBanner}</p>}
-          {apiKeyError && (
-            <div className="mt-2">
-              <ErrorBanner message={apiKeyError} />
-            </div>
-          )}
-
-          {apiKeyStatus?.configured && (
-            <p className="mt-2 text-sm text-ink-soft">
-              Saved: <span className="font-mono text-ink">{apiKeyStatus.maskedKey}</span>
-            </p>
-          )}
-
-          <div className="mt-3 flex flex-wrap gap-2">
-            <input
-              type="password"
-              value={apiKeyInput}
-              onChange={(e) => setApiKeyInput(e.target.value)}
-              placeholder={apiKeyStatus?.configured ? "Replace key" : "Paste your Google API key"}
-              className="min-w-0 flex-1 rounded-lg border border-border bg-paper px-3 py-2 text-sm text-ink outline-none focus:border-ink"
-            />
-            <button
-              type="button"
-              onClick={() => void submitApiKey(apiKeyInput.trim())}
-              disabled={apiKeySaving || !apiKeyInput.trim()}
-              className="rounded-full bg-ink px-4 py-2 text-xs font-semibold text-paper disabled:opacity-40"
-            >
-              {apiKeySaving ? "Saving…" : "Save"}
-            </button>
-            {apiKeyStatus?.configured && (
-              <button
-                type="button"
-                onClick={() => void submitApiKey("")}
-                disabled={apiKeySaving}
-                className="rounded-full border border-border px-4 py-2 text-xs font-medium text-ink-soft hover:border-[var(--color-danger)]/40 hover:text-[var(--color-danger)] disabled:opacity-40"
-              >
-                Remove
-              </button>
-            )}
-          </div>
         </div>
 
         <div className="rounded-2xl border border-border bg-card p-5">

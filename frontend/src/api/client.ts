@@ -84,32 +84,14 @@ export interface GmailStatus {
 
 export const getGmailStatus = () => request<GmailStatus>("/gmail/status");
 
-export const verifyGmail = () =>
-  request<{ verified: boolean; emailAddress?: string; reason?: string }>("/gmail/verify", { method: "POST" });
-
 export const disconnectGmail = () => request<{ connected: false }>("/gmail/disconnect", { method: "POST" });
-
-// ---- Optional Google API key -------------------------------------------------
-// Separate from Gmail (which is OAuth-based, not a pasted key) — kept available in Settings but
-// not currently required or consumed by anything.
-
-export interface GoogleApiKeyStatus {
-  configured: boolean;
-  maskedKey?: string;
-}
-
-export const getGoogleApiKeyStatus = () => request<GoogleApiKeyStatus>("/settings/google-api-key");
-
-/** Pass an empty string to clear the saved key. */
-export const saveGoogleApiKey = (apiKey: string) =>
-  request<GoogleApiKeyStatus>("/settings/google-api-key", { method: "POST", body: json({ apiKey }) });
 
 // ---- People -----------------------------------------------------------------
 
 export interface PersonSummary {
   id: number;
   name: string;
-  telegramUsername: string;
+  telegramUsername: string | null;
   relationship: string | null;
   phoneNumber: string | null;
   telegramVerified: boolean;
@@ -117,6 +99,52 @@ export interface PersonSummary {
   openDebts: number;
   keepFormal: boolean;
 }
+
+// ---- Gmail Sync (per-debt) --------------------------------------------------
+
+/** The three real outcomes of a completed Gmail Sync check — what's persisted on a debt and shown
+ * again as "Last checked: <time>" without re-syncing. Distinct from the sync-attempt-level statuses
+ * below (GMAIL_NOT_CONNECTED / GMAIL_PERMISSION_REQUIRED / SYNC_ERROR), which are never persisted. */
+export type GmailSyncMatchStatus = "PAYMENT_FOUND" | "POSSIBLE_PAYMENT" | "NO_PAYMENT_FOUND";
+
+export type GmailSyncResponseStatus =
+  | GmailSyncMatchStatus
+  | "GMAIL_NOT_CONNECTED"
+  | "GMAIL_PERMISSION_REQUIRED"
+  | "SYNC_ERROR";
+
+/** The persisted last-check summary nested on a debt/expense-debt/person-debt payload — null until
+ * "Sync" has been used at least once on that debt. */
+export interface GmailSyncSummary {
+  status: GmailSyncMatchStatus;
+  checkedAt: string | null;
+  confidence: number | null;
+  emailId: string | null;
+  emailDate: string | null;
+  sender: string | null;
+  subject: string | null;
+  reason: string | null;
+}
+
+/** The live response of a single POST /debts/:id/sync call — always 200, `status` carries every
+ * outcome (see backend/api/routes/debts.ts's /:id/sync). */
+export interface GmailSyncResult {
+  status: GmailSyncResponseStatus;
+  /** The debt's status after this sync — "PAID" when a payment email matched on name + date + exact
+   * amount (the backend marks it paid in the same request), otherwise unchanged. */
+  debtStatus?: "PAID" | "UNPAID";
+  paidAt?: string | null;
+  checkedAt?: string | null;
+  confidence?: number | null;
+  emailId?: string | null;
+  emailDate?: string | null;
+  sender?: string | null;
+  subject?: string | null;
+  reason?: string | null;
+}
+
+export const syncDebtWithGmail = (debtId: number) =>
+  request<GmailSyncResult>(`/debts/${debtId}/sync`, { method: "POST" });
 
 export interface PersonDebtSummary {
   id: number;
@@ -127,6 +155,7 @@ export interface PersonDebtSummary {
   paidAt: string | null;
   merchant: string | null;
   category: string | null;
+  gmailSync: GmailSyncSummary | null;
 }
 
 export interface ReminderSummary {
@@ -145,7 +174,7 @@ export interface ReminderSummary {
 export interface PersonDetail {
   id: number;
   name: string;
-  telegramUsername: string;
+  telegramUsername: string | null;
   relationship: string | null;
   notes: string | null;
   phoneNumber: string | null;
@@ -163,7 +192,7 @@ export const getPerson = (id: number) => request<PersonDetail>(`/people/${id}`);
 
 export const createPerson = (input: {
   name: string;
-  telegramUsername: string;
+  telegramUsername?: string;
   relationship?: string;
   notes?: string;
   phoneNumber?: string;
@@ -254,6 +283,7 @@ export interface ExpenseDebtDetail {
   createdAt: string;
   paidAt: string | null;
   reminders: ReminderSummary[];
+  gmailSync: GmailSyncSummary | null;
 }
 
 export const getExpense = (id: number) => request<Expense & { debts: ExpenseDebtDetail[] }>(`/expenses/${id}`);
@@ -288,6 +318,7 @@ export interface DebtSummary {
   additionalContext: string | null;
   desiredAction: string | null;
   selectedItems: Array<{ name: string; amount: number }> | null;
+  gmailSync: GmailSyncSummary | null;
 }
 
 export const createDebt = (input: {

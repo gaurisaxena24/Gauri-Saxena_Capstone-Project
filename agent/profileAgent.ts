@@ -15,7 +15,13 @@ export function addPerson(userId: number, input: CreatePersonInput): Promise<Per
   return profileSkill.addPerson(userId, input);
 }
 
-export function findOrCreatePerson(userId: number, input: CreatePersonInput): Promise<Person> {
+// Deliberately requires telegramUsername (unlike CreatePersonInput, where it's optional) — see
+// profileSkill.findOrCreatePerson's own comment for why its find-by-username contract can't take an
+// optional lookup key.
+export function findOrCreatePerson(
+  userId: number,
+  input: { name: string; telegramUsername: string; relationship?: string }
+): Promise<Person> {
   return profileSkill.findOrCreatePerson(userId, input);
 }
 

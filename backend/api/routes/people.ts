@@ -3,7 +3,7 @@ import * as agent from "../../../agent/debtCollectorAgent.js";
 import * as profileSkill from "../../../skills/profileSkill.js";
 import * as debtSkill from "../../../skills/debtSkill.js";
 import * as reminderSkill from "../../../skills/reminderSkill.js";
-import { verifyPersonByCode, type Person, type PersonWithStats } from "../../database/database.js";
+import { verifyPersonByCode, type ExpenseDebt, type Person, type PersonWithStats } from "../../database/database.js";
 import { sendTelegramMessage } from "../../tools/sendTelegramMessage.js";
 import type { AuthedRequest } from "../middleware/requireAuth.js";
 
@@ -47,15 +47,15 @@ peopleRouter.get("/", async (req, res) => {
 peopleRouter.post("/", async (req, res) => {
   const userId = (req as AuthedRequest).userId;
   const { name, telegramUsername, relationship, notes, phoneNumber, keepFormal } = req.body ?? {};
-  if (!name?.trim() || !telegramUsername?.trim()) {
-    res.status(400).json({ error: "Name and Telegram username are required." });
+  if (!name?.trim()) {
+    res.status(400).json({ error: "Name is required." });
     return;
   }
 
   try {
     const person = await profileSkill.addPerson(userId, {
       name: name.trim(),
-      telegramUsername,
+      telegramUsername: telegramUsername?.trim() || undefined,
       relationship: relationship?.trim() || undefined,
       notes: notes?.trim() || undefined,
       phoneNumber: phoneNumber?.trim() || undefined,
@@ -73,6 +73,22 @@ peopleRouter.post("/", async (req, res) => {
   }
 });
 
+/** Same shape as backend/api/routes/debts.ts's/expenses.ts's own local copy — see their comments for
+ * why this stays duplicated per-route-file rather than shared. */
+function toGmailSyncPayload(debt: ExpenseDebt) {
+  if (!debt.gmail_sync_status) return null;
+  return {
+    status: debt.gmail_sync_status,
+    checkedAt: debt.gmail_sync_checked_at,
+    confidence: debt.gmail_sync_confidence,
+    emailId: debt.gmail_sync_email_id,
+    emailDate: debt.gmail_sync_email_date,
+    sender: debt.gmail_sync_sender,
+    subject: debt.gmail_sync_subject,
+    reason: debt.gmail_sync_reason,
+  };
+}
+
 async function buildPersonDetail(userId: number, person: Person) {
   const debtRows = await debtSkill.getDebtsByPerson(userId, person.id);
   const debts = await Promise.all(
@@ -87,6 +103,7 @@ async function buildPersonDetail(userId: number, person: Person) {
         paidAt: d.paid_at,
         merchant: expense?.merchant ?? null,
         category: expense?.category ?? null,
+        gmailSync: toGmailSyncPayload(d),
       };
     })
   );

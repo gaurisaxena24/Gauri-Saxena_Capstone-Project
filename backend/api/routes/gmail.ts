@@ -11,7 +11,13 @@
 
 import { Router } from "express";
 import { clearGmailConnection, getUserById, saveGmailConnection } from "../../database/database.js";
-import { decryptSecret, encryptSecret, signState, verifyState } from "../../lib/credentialCrypto.js";
+import {
+  decryptSecret,
+  encryptSecret,
+  isCredentialEncryptionConfigured,
+  signState,
+  verifyState,
+} from "../../lib/credentialCrypto.js";
 import type { AuthedRequest } from "../middleware/requireAuth.js";
 
 export const gmailRouter = Router();
@@ -22,8 +28,7 @@ export function isGmailConfigured(): boolean {
   if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET || !process.env.GOOGLE_REDIRECT_URI) {
     return false;
   }
-  const key = process.env.CREDENTIAL_ENCRYPTION_KEY;
-  return Boolean(key && Buffer.from(key, "base64").length === 32);
+  return isCredentialEncryptionConfigured();
 }
 
 /** Where the browser lands after the OAuth round trip. Express doesn't serve the frontend at all

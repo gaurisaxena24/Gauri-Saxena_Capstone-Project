@@ -1287,6 +1287,274 @@ clean boot, since "the first boot didn't crash" doesn't prove the migration is a
 
 ---
 
+## 2026-09-23 (3)
+### Task: Make a person's Telegram username optional, not required
+
+**What I asked Claude Code to do:**
+Remove the requirement for a Telegram username when adding a person ("People") to the app — it
+should become optional everywhere (frontend forms, backend route, database schema, TS types on both
+sides), not just relaxed in one layer while another still silently assumes it's always present.
+
+**What Claude Code did:**
+- Frontend: `frontend/src/pages/People.tsx` and `frontend/src/pages/AddExpenseFlow.tsx` — removed the
+  client-side "Telegram username is required" check from `handleAdd`/`addNewPerson`, relabeled the
+  field "Telegram username (optional)" with a placeholder noting it's only needed to send Telegram
+  reminders, and sent `undefined` instead of an empty string when left blank.
+- Backend route: `backend/api/routes/people.ts`'s `POST /people` now 400s only when `name` is
+  missing/blank.
+- Database (`backend/database/database.ts`): the base `CREATE TABLE IF NOT EXISTS people` no longer
+  declares `telegram_username` `NOT NULL` (for a genuinely fresh DB), and `ensureSchema()` gained an
+  idempotent `ALTER TABLE people ALTER COLUMN telegram_username DROP NOT NULL` for existing
+  databases (safe to rerun — dropping an already-dropped NOT NULL is a no-op in Postgres). Confirmed
+  the existing `UNIQUE (user_id, telegram_username)` composite constraint needs no change, since
+  Postgres treats multiple NULLs in a UNIQUE column as distinct from one another. `createPerson(...)`
+  now inserts `NULL` (never an empty string) when no username was given, and the `Person` interface's
+  `telegram_username` is now `string | null`, matching the existing nullable-field convention already
+  used for `phone_number` in this file.
+- `skills/profileSkill.ts`'s `CreatePersonInput.telegramUsername` is now optional. Its
+  `findOrCreatePerson` (and `agent/profileAgent.ts`'s wrapper of the same name) deliberately keep
+  requiring a real username as an argument, since that function's whole contract is "find this person
+  by this exact username, or create them" — a lookup key that can't itself be optional. Neither is
+  currently called from any route (confirmed via repo-wide grep), so this didn't affect any real
+  caller.
+- `backend/ai/types.ts`'s `ReminderContext.person.telegramUsername` is now `string | null`. The
+  reminder-generation prompt (`skills/contextSkill.ts`, `backend/ai/types.ts`'s
+  `REMINDER_SYSTEM_PROMPT`/`buildReminderPrompt`) never actually constructs an `@username` mention
+  anywhere (confirmed via a repo-wide grep for `@${...}` template literals) — the username is only
+  ever JSON-serialized into the model's context object, where `null` is already a completely safe,
+  honest value, so no prompt-construction change was needed there.
+- `frontend/src/api/client.ts` — `PersonSummary.telegramUsername` and `PersonDetail.telegramUsername`
+  are now `string | null`; `createPerson`'s input type's `telegramUsername` is now optional.
+  `AuthedUser.telegramUsername` (the logged-in app user's own login handle, a different concept from
+  a contact's username) was left untouched and still required, as instructed.
+- Fixed every downstream place TypeScript's widened types (or a plain runtime null-safety read)
+  surfaced an unguarded assumption:
+  - `backend/gmail/paymentScanner.ts`'s `payerIdentifierLikelyMatchesPerson` — its local person type's
+    `telegram_username` is now `string | null`, and the username-substring match is now skipped
+    (rather than crashing) when it's absent; name and phone-based matching already worked
+    independently.
+  - `skills/telegramSkill.ts`'s `TelegramNotVerifiedError` — used to always interpolate
+    `@${person.telegram_username}`, which would have rendered as the literal text "@null" for a
+    usernameless contact. Now falls back to the person's name as the label, and gives
+    username-specific vs. code-specific instructions for how to verify, since a usernameless contact
+    can only ever verify via the one-time code path (a bare incoming message can't be matched to them
+    by username at all).
+  - `frontend/src/pages/People.tsx`, `frontend/src/pages/AddExpenseFlow.tsx`, and
+    `frontend/src/pages/PersonDetail.tsx` — every direct `@{person.telegramUsername}` interpolation
+    (list rows, the remove-confirmation dialog, the verification-status line) now falls back to "No
+    Telegram username" or the person's name when it's null.
+  - Confirmed (by reading, not just grepping) that `backend/telegram/poller.ts`'s
+    `owner.telegram_username` and `backend/api/routes/auth.ts`'s `user.telegram_username` are a
+    genuinely different field — the logged-in app-user's own login handle from the `users` table, not
+    a `people` contact's username — and are untouched, correctly still required.
+  - Confirmed the actual Telegram-sending path (`skills/telegramSkill.ts`'s `sendApprovedMessage`,
+    used by `backend/api/routes/debts.ts` and `agent/debtCollectorAgent.ts`'s paid-thank-you send)
+    already gates cleanly on `person.telegram_verified && person.telegram_chat_id` before ever
+    sending, throwing `TelegramNotVerifiedError` otherwise — so a person with no username, who can
+    therefore never become verified via the username-match path (only via the one-time code, which
+    doesn't need a username), already safely never gets a Telegram message attempted. No new guard
+    was needed there.
+
+**Files created/modified:**
+- `backend/database/database.ts`
+- `backend/api/routes/people.ts`
+- `backend/ai/types.ts`
+- `backend/gmail/paymentScanner.ts`
+- `skills/profileSkill.ts`
+- `skills/telegramSkill.ts`
+- `agent/profileAgent.ts`
+- `frontend/src/api/client.ts`
+- `frontend/src/pages/People.tsx`
+- `frontend/src/pages/AddExpenseFlow.tsx`
+- `frontend/src/pages/PersonDetail.tsx`
+- `BUILD_LOG.md` (this entry)
+
+**Result:** Telegram username is now optional at every layer touched: the Add Person form no longer
+blocks submission on a blank username, the backend route only requires `name`, the database column
+accepts `NULL` (both for new databases and via an idempotent migration for existing ones), and every
+TS type and its real consumers on both sides were updated together rather than leaving a partial
+state where the DB allows `NULL` but a type still claims non-null.
+
+**Testing / verification:**
+- `npx tsc --noEmit` at the repo root (covers `backend/`, `agent/`, `skills/`): clean, no errors.
+- `npx tsc --noEmit` in `frontend/`: clean, no errors.
+- Repo-wide `grep` for every remaining `.telegram_username` / `.telegramUsername` reference after the
+  type changes, to make sure nothing was missed — each remaining hit was individually checked and is
+  either already-null-safe or is the distinct `users.telegram_username` (app-user login) field that
+  was intentionally left alone.
+- Could NOT verify the `ALTER TABLE people ALTER COLUMN telegram_username DROP NOT NULL` migration
+  against a real running database in this session: `backend/index.ts` was started briefly
+  (`npx tsx backend/index.ts`) to exercise `ensureSchema()`, but it failed to connect
+  (`ECONNREFUSED` to the `DATABASE_URL` configured in `.env`, `localhost:5433` — no Postgres instance
+  was reachable in this environment). No database was touched, no test data was created or needed
+  cleanup. This migration follows the exact same idempotent, defensive pattern as every other
+  `ALTER TABLE ... people` statement already in `ensureSchema()` in this file, but this specific
+  statement itself was not exercised against a live database in this pass — worth a real boot check
+  before/at next deploy.
+- Did not start the frontend dev server or click through the Add Person UI in a browser in this
+  session — reasoned through the JSX changes and relied on the clean `tsc` pass plus the same
+  null-fallback pattern already used elsewhere in these files (e.g. `person.relationship ?? "—"`).
+
+**Claude Code token usage:** Not available (see the automatic per-turn token usage log below).
+
+**Notes / issues / judgment calls:**
+- `getOrCreatePerson` (`backend/database/database.ts`) and its two wrappers
+  (`skills/profileSkill.ts`/`agent/profileAgent.ts`'s `findOrCreatePerson`) were deliberately left
+  requiring a non-optional `telegramUsername` argument, on the reasoning that the function's entire
+  purpose is "look this person up by this exact username, or create them if no match exists" — an
+  optional lookup key doesn't make sense for that contract. Neither wrapper currently has any real
+  caller in the codebase (confirmed by grep), so this is a judgment call about the right shape for
+  unused-but-documented interface, not a fix to an active bug.
+- The reminder-sending path was already correctly gated on `telegram_verified` before this change; no
+  new guard was added there, only confirmed by reading the code (see above).
+- No real Telegram messages were sent and no real database rows were created, modified, or deleted as
+  part of this task — this was a pure code-and-types change, verified with `tsc` only.
+
+---
+
+## 2026-09-23
+### Task: Add a per-debt Gmail Sync feature
+
+**What I asked Claude Code to do:**
+Add a new, additive "Gmail Sync" feature: a small "Sync" button on every unpaid debt (the user's
+spec called it "expense", but in this codebase's data model an expense can be split across several
+people, so it was explicitly reframed as per-debt, on `expense_debts`, not per-expense) that checks
+the user's connected Gmail for evidence that specific debt was paid, using the existing Gmail OAuth
+connection and the existing Groq AI provider only — never a Google API key, never auto-marking a
+debt paid, never touching another user's data, never modifying the existing background Gmail
+scanner, reminder scheduling, Telegram flow, or expense/debt creation logic.
+
+**What Claude Code did:**
+- Inspected the existing Gmail OAuth flow (`backend/api/routes/gmail.ts`), the background payment
+  scanner (`backend/gmail/paymentScanner.ts`), the existing AI classification pattern
+  (`backend/ai/gmailPaymentReader.ts` + `backend/ai/types.ts`), the existing mark-paid flow
+  (`agent/debtCollectorAgent.ts`'s `markDebtPaid`, already exposed at `POST /api/debts/:id/paid`),
+  the `expense_debts`/`ExpenseDebt` schema, and every place a debt row renders in the frontend
+  (`Expenses.tsx`, `PersonDetail.tsx`, confirmed `People.tsx` only shows aggregated totals, not
+  individual debts, so no Sync button belongs there) before writing anything.
+- Added 8 nullable, additive columns to `expense_debts` (`gmail_sync_status`,
+  `gmail_sync_checked_at`, `gmail_sync_confidence`, `gmail_sync_email_id`, `gmail_sync_email_date`,
+  `gmail_sync_sender`, `gmail_sync_subject`, `gmail_sync_reason`) via the same idempotent
+  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` convention every other additive column in
+  `database.ts` already uses, plus a new `updateDebtGmailSync` persistence function. No email body
+  is ever stored.
+- Added a new targeted AI classification (`backend/ai/debtSyncReader.ts` + new types/prompt in
+  `backend/ai/types.ts`) that judges one candidate email against one specific target debt (person
+  name/username/phone, exact amount, expense date) and returns `PAYMENT_FOUND` /
+  `POSSIBLE_PAYMENT` / `NO_PAYMENT_FOUND` with a confidence and a short plain-language reason —
+  reusing `callGroqText`/`extractJson` exactly as the existing background-scanner classifier does,
+  with the same honest `extractionFailed` fallback.
+- Added `backend/gmail/debtSync.ts`: builds a Gmail search query scoped to a ±7-day window around
+  the expense's date (Gmail's search syntax is only day-granular; a week either side is generous
+  enough to catch a delayed payment without pulling in a lot of unrelated mail or costing an AI call
+  per unrelated candidate) plus the same payment-language OR-group `paymentScanner.ts` already uses,
+  fetches up to 12 candidate messages, classifies each, and picks the single strongest result.
+  Deliberately does NOT import `paymentScanner.ts`'s private Gmail-fetch helpers — they were
+  reimplemented locally (same REST calls, same base64url/HTML-stripping body extraction) so this new
+  user-initiated feature can never change the existing background scanner's behavior by editing a
+  function it also depends on; `paymentScanner.ts` itself was not touched.
+- Added `POST /api/debts/:id/sync` in `backend/api/routes/debts.ts`: auth-gated, resolves and
+  verifies debt ownership (404 otherwise), checks `isGmailConfigured()` and the user's own
+  `gmail_refresh_token` for `GMAIL_NOT_CONNECTED`, refreshes the access token and maps Google's
+  `invalid_grant` to `GMAIL_PERMISSION_REQUIRED` (without silently clearing the connection, unlike
+  the background scanner, since this is a user-initiated action), runs the sync, persists a real
+  result, and catches any other failure as `SYNC_ERROR` with the real error logged server-side only.
+  Always responds 200 with a structured `status` (same convention as `POST /api/gmail/verify`) except
+  for the 404/400 structural cases. Never calls `markDebtPaid` itself — marking paid stays an
+  explicit separate action via the existing `POST /:id/paid` endpoint.
+- Added `gmailSync` to the three existing debt-payload shapes that already return `ExpenseDebt` rows
+  to the frontend (`toDebtPayload` in `debts.ts`, `toExpenseDebtDetail` in `expenses.ts`,
+  `buildPersonDetail`'s debts array in `people.ts`), each with its own small local
+  `toGmailSyncPayload` helper, matching this codebase's existing convention of per-route-file local
+  payload shaping rather than a shared cross-file helper.
+- Frontend: added `GmailSyncSummary`/`GmailSyncResult` types and `syncDebtWithGmail` to
+  `frontend/src/api/client.ts`, plus `gmailSync` on `ExpenseDebtDetail`, `DebtSummary`, and
+  `PersonDebtSummary`. Added a new shared component `frontend/src/components/GmailSync.tsx`
+  (`GmailSyncControl`) implementing the Sync button, in-flight/double-click guard, and every result
+  state from the spec (`PAYMENT_FOUND` with an expandable ✓ badge and Mark as Paid;
+  `POSSIBLE_PAYMENT` with a banner offering Mark as Paid / Not This Payment, the latter a
+  client-side-only dismissal; `NO_PAYMENT_FOUND` plain text; `GMAIL_NOT_CONNECTED` /
+  `GMAIL_PERMISSION_REQUIRED` linking to the existing `/settings` Gmail connect flow;
+  `SYNC_ERROR` reusing the app's existing danger-soft error styling), "Last checked: <time>" +
+  "Sync again", and "Mark as Paid" reusing the existing `markDebtPaid` API call verbatim. Wired it
+  into `Expenses.tsx`'s `DebtRow` and a new `PersonDebtRow` in `PersonDetail.tsx` (the latter's debt
+  list used to be a single `<Link>` per row; split into the Link plus a separate Sync control below
+  it, since an interactive button can't nest inside an anchor). Both pages update only the synced
+  debt's own local state on completion — no whole-list refetch.
+- All theming uses existing CSS custom properties only (`--color-success-badge-bg/-text`,
+  `--color-accent-soft/-dark`, `--color-danger-soft/(danger)`, `--color-border`, `--color-ink*`) —
+  no new hardcoded colors, no edits to `index.css`.
+
+**Files created/modified:**
+- `backend/database/database.ts` — additive `expense_debts` columns, `ExpenseDebt` interface
+  fields, `DebtGmailSyncStatus` type, `updateDebtGmailSync`.
+- `backend/ai/types.ts` — `DebtSyncMatchStatus`/`DebtSyncClassification` types,
+  `DEBT_SYNC_SYSTEM_PROMPT`, `buildDebtSyncPrompt`, `mapRawDebtSyncClassification`,
+  `emptyDebtSyncClassification`.
+- `backend/ai/debtSyncReader.ts` (new) — `classifyDebtSyncCandidate`.
+- `backend/gmail/debtSync.ts` (new) — `syncDebtAgainstGmail` and its local Gmail fetch primitives.
+- `backend/api/routes/debts.ts` — `POST /:id/sync`, `gmailSync` in `toDebtPayload`.
+- `backend/api/routes/expenses.ts` — `gmailSync` in `toExpenseDebtDetail`.
+- `backend/api/routes/people.ts` — `gmailSync` in `buildPersonDetail`'s debts array.
+- `frontend/src/api/client.ts` — `GmailSyncSummary`/`GmailSyncResult`/`GmailSyncMatchStatus`/
+  `GmailSyncResponseStatus` types, `syncDebtWithGmail`, `gmailSync` field on `ExpenseDebtDetail`,
+  `DebtSummary`, `PersonDebtSummary`.
+- `frontend/src/components/GmailSync.tsx` (new) — `GmailSyncControl`.
+- `frontend/src/pages/Expenses.tsx` — wired `GmailSyncControl` into `DebtRow`.
+- `frontend/src/pages/PersonDetail.tsx` — wired `GmailSyncControl` into a new `PersonDebtRow`
+  (split out of the previous single-`<Link>` debt row).
+- `BUILD_LOG.md` — this entry.
+
+**Result:**
+Feature implemented end to end (schema, AI classification, Gmail search/fetch, route, frontend UI)
+and additive throughout — no existing table, route, prompt, or component was removed or renamed,
+and every changed file was already reviewed to confirm the pre-existing uncommitted work already in
+this working tree (visible in `git status` before this task started — e.g. optional Telegram
+usernames, `People.tsx`/`AddExpenseFlow.tsx` changes) was left untouched by this task's edits.
+
+**Testing / verification:**
+- `npx tsc --noEmit` at the repo root: clean, no errors.
+- `npx tsc -b` and `npx vite build` in `frontend/`: both clean, no errors (matches the real
+  `npm run build` script's first two steps). No `as`/`!` escape hatches added to paper over a type
+  issue.
+- Manual code-review verification only beyond that — this environment has no reachable Postgres and
+  no real Gmail account, so the actual endpoint was never exercised against a live database or live
+  Gmail. Specifically hand-traced: the ownership check (`debtSkill.getDebt(userId, id)` already
+  filters by `user_id`, so a foreign debt id 404s), every one of the six required response statuses
+  in `POST /:id/sync`'s control flow, that `updateDebtGmailSync` is only ever called after a real
+  completed check (never on `GMAIL_NOT_CONNECTED`/`GMAIL_PERMISSION_REQUIRED`/`SYNC_ERROR`, so a
+  failed sync can never clobber a previously-stored real result), and that `markDebtPaid` is reused
+  verbatim (only ever called from the pre-existing `POST /:id/paid` endpoint, never from `/sync`
+  itself). No test data was created in any database, and no real Telegram message or Gmail request
+  was sent, since no live DB/Gmail credentials are reachable from this environment.
+
+**Claude Code token usage:** Not available (see the automatic per-turn token usage log below).
+
+**Notes / issues / judgment calls:**
+- Date window: ±7 days around the expense date, chosen as a reasonable default for "not instant but
+  not unbounded" — not derived from any measured data, since there's no real Gmail traffic to tune
+  against here.
+- Confidence thresholds: a candidate's AI-assigned confidence ≥0.75 (and the model didn't classify
+  it as `NO_PAYMENT_FOUND`) is reported as `PAYMENT_FOUND`; ≥0.35 as `POSSIBLE_PAYMENT`; anything
+  weaker, or every candidate coming back `NO_PAYMENT_FOUND`, as `NO_PAYMENT_FOUND`. Same reasoning
+  as above — a reasonable, documented default, not a tuned value.
+- The Sync button was placed as its own full-width row directly under each debt's summary line
+  (rather than squeezed inline next to the amount/status badge) so the various result panels
+  (email metadata, Mark as Paid / Not This Payment buttons) have room to render cleanly; this is a
+  presentation choice, not a spec deviation — the button still appears on every unpaid debt row on
+  both `Expenses.tsx` and `PersonDetail.tsx`.
+- `people.telegram_username`/`people.phone_number` were confirmed to be the only stored per-person
+  identifiers usable for payer matching — there is no `email` column on `people`, so (per the
+  spec's own instruction not to invent one) the Gmail search query is not narrowed by the person's
+  identity at the query level; that matching happens in the AI classification step instead, exactly
+  like the existing background scanner's own `payerIdentifierLikelyMatchesPerson` does it for its
+  own different purpose.
+- `paymentScanner.ts` (the background scanner) was read but deliberately not edited or imported
+  from — see the judgment call above about duplicating its small Gmail-fetch primitives instead of
+  sharing them, to guarantee zero risk to its existing behavior.
+
+---
+
 ## Automatic per-turn token usage log
 
 Everything above this line is the narrative task-by-task log (one entry per unit of work, written
@@ -1473,3 +1741,47 @@ automatic logging to keep working correctly.
 - 2026-09-23 11:47:45 - 704040 tokens (input: 703171, output: 869)
 - 2026-09-23 11:50:44 - 1411319 tokens (input: 1410136, output: 1183)
 - 2026-09-23 11:59:30 - 1423859 tokens (input: 1418848, output: 5011)
+- 2026-09-23 12:44:03 - 31143006 tokens (input: 31117736, output: 25270)
+- 2026-09-23 12:49:40 - 12834384 tokens (input: 12827838, output: 6546)
+- 2026-09-23 12:54:07 - 12149337 tokens (input: 12144136, output: 5201)
+- 2026-09-23 13:01:21 - 16708434 tokens (input: 16702570, output: 5864)
+- 2026-09-23 13:07:23 - 11567944 tokens (input: 11563509, output: 4435)
+- 2026-09-23 13:13:18 - 11689527 tokens (input: 11684293, output: 5234)
+- 2026-09-23 13:15:33 - 903857 tokens (input: 903046, output: 811)
+- 2026-09-23 13:16:30 - 904822 tokens (input: 903922, output: 900)
+- 2026-09-23 15:47:26 - 17476183 tokens (input: 17460490, output: 15693)
+- 2026-09-23 18:03:53 - 26654070 tokens (input: 26636854, output: 17216)
+- 2026-09-23 18:04:38 - 5778778 tokens (input: 5777723, output: 1055)
+- 2026-09-23 18:08:00 - 966527 tokens (input: 965209, output: 1318)
+- 2026-09-23 18:12:26 - 87437 tokens (input: 85340, output: 2097)
+- 2026-09-23 18:25:46 - 15438445 tokens (input: 15419648, output: 18797)
+- 2026-09-23 18:26:19 - 800305 tokens (input: 799570, output: 735)
+- 2026-09-23 18:26:33 - 200971 tokens (input: 200928, output: 43)
+- 2026-09-23 18:29:43 - 5512029 tokens (input: 5506737, output: 5292)
+- 2026-09-23 18:34:12 - 5693469 tokens (input: 5685314, output: 8155)
+- 2026-09-23 18:36:33 - 2007104 tokens (input: 2004711, output: 2393)
+- 2026-09-23 18:37:09 - 505642 tokens (input: 505609, output: 33)
+- 2026-09-23 18:38:13 - 253224 tokens (input: 253207, output: 17)
+- 2026-09-23 18:39:20 - 253553 tokens (input: 253477, output: 76)
+- 2026-09-23 18:40:45 - 253832 tokens (input: 253806, output: 26)
+- 2026-09-23 18:41:29 - 1535915 tokens (input: 1534645, output: 1270)
+- 2026-09-23 19:19:14 - 517522 tokens (input: 515640, output: 1882)
+- 2026-09-23 19:20:04 - 521642 tokens (input: 520537, output: 1105)
+- 2026-09-23 19:22:21 - 545491 tokens (input: 538353, output: 7138)
+- 2026-09-23 19:26:41 - 279042 tokens (input: 277769, output: 1273)
+- 2026-09-23 19:30:02 - 1153013 tokens (input: 1142137, output: 10876)
+- 2026-09-23 19:42:43 - 1510417 tokens (input: 1509045, output: 1372)
+- 2026-09-23 19:45:06 - 3839789 tokens (input: 3835832, output: 3957)
+- 2026-09-23 19:45:20 - 649646 tokens (input: 649620, output: 26)
+- 2026-09-23 19:45:32 - 325230 tokens (input: 325217, output: 13)
+- 2026-09-23 19:45:54 - 651297 tokens (input: 651262, output: 35)
+- 2026-09-23 19:46:08 - 326059 tokens (input: 326042, output: 17)
+- 2026-09-23 19:47:06 - 326337 tokens (input: 326320, output: 17)
+- 2026-09-23 19:47:47 - 981460 tokens (input: 980957, output: 503)
+- 2026-09-23 19:50:49 - 984251 tokens (input: 983998, output: 253)
+- 2026-09-23 19:53:47 - 657683 tokens (input: 657068, output: 615)
+- 2026-09-23 19:56:57 - 989266 tokens (input: 988761, output: 505)
+- 2026-09-23 20:08:16 - 661746 tokens (input: 660790, output: 956)
+- 2026-09-23 22:06:44 - 997659 tokens (input: 995970, output: 1689)
+- 2026-09-23 22:07:06 - 668056 tokens (input: 667574, output: 482)
+- 2026-09-23 22:31:41 - 2038026 tokens (input: 2016919, output: 21107)

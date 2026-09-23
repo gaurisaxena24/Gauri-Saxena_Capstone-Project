@@ -17,6 +17,11 @@
 
   --color-success: #2f9e44;
   --color-success-soft: #e7f6ea;
+  /* Paid status badge only — kept separate from --color-success(-soft) above so its dark-mode
+     override doesn't bleed into the many plain-text success usages (Verified/Connected labels,
+     banners) that also read that pair. */
+  --color-success-badge-bg: #e7f6ea;
+  --color-success-badge-text: #2f9e44;
   --color-danger: #d64545;
   --color-danger-soft: #fbeaea;
 
@@ -47,6 +52,8 @@ html[data-theme="dark"] {
   --color-ink-faint: #7d7e85;
   --color-card: #1f2025;
   --color-border: #33343b;
+  --color-success-badge-bg: #123d24;
+  --color-success-badge-text: #6ee7a0;
 }
 
 /* Settings > Font Size — scales the root em, so every Tailwind text-* size (all rem-based) scales

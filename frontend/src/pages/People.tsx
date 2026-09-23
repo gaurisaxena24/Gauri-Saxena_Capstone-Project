@@ -145,15 +145,15 @@ export function People() {
 
   async function handleAdd() {
     setAddError(null);
-    if (!name.trim() || !telegramUsername.trim()) {
-      setAddError("Name and Telegram username are required.");
+    if (!name.trim()) {
+      setAddError("Name is required.");
       return;
     }
     setSaving(true);
     try {
       const created = await createPerson({
         name: name.trim(),
-        telegramUsername: telegramUsername.trim(),
+        telegramUsername: telegramUsername.trim() || undefined,
         phoneNumber: phoneNumber.trim() || undefined,
         relationship: relationship.trim() || undefined,
         notes: notes.trim() || undefined,
@@ -177,9 +177,10 @@ export function People() {
   }
 
   async function handleRemove(person: PersonSummary) {
+    const label = person.telegramUsername ? `@${person.telegramUsername}` : "no Telegram username";
     if (
       !window.confirm(
-        `Remove ${person.name} (@${person.telegramUsername})?\n\nThis does not affect any of their expenses. If a debt is still drafted for them, removal will be blocked until that debt is removed first.`
+        `Remove ${person.name} (${label})?\n\nThis does not affect any of their expenses. If a debt is still drafted for them, removal will be blocked until that debt is removed first.`
       )
     ) {
       return;
@@ -207,7 +208,12 @@ export function People() {
         <div className="mb-6 space-y-4 rounded-2xl border border-border bg-card p-5">
           <div className="grid grid-cols-2 gap-4">
             <Field label="Name" value={name} onChange={setName} />
-            <Field label="Telegram username" value={telegramUsername} onChange={setTelegramUsername} placeholder="rahul123" />
+            <Field
+              label="Telegram username (optional)"
+              value={telegramUsername}
+              onChange={setTelegramUsername}
+              placeholder="rahul123 — only needed to send them Telegram reminders"
+            />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <Field label="Phone number" value={phoneNumber} onChange={setPhoneNumber} placeholder="Optional" />
@@ -267,7 +273,8 @@ export function People() {
                   <div>
                     <p className="font-medium text-ink">{person.name}</p>
                     <p className="text-sm text-ink-faint">
-                      @{person.telegramUsername} · {person.relationship ?? "—"}
+                      {person.telegramUsername ? `@${person.telegramUsername}` : "No Telegram username"} ·{" "}
+                      {person.relationship ?? "—"}
                     </p>
                     <p className="mt-1 text-xs">
                       {person.telegramVerified ? (

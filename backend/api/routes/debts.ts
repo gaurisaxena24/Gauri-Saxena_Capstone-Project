@@ -7,7 +7,10 @@ import { InvalidShareError, type ShareMode } from "../../../skills/debtCalculati
 import { TelegramNotVerifiedError } from "../../../skills/telegramSkill.js";
 import { AiNotConfiguredError, AiRequestError, TONES, type Tone } from "../../ai/types.js";
 import { isGroqConfigured } from "../../ai/groqClient.js";
-import type { ExpenseDebt } from "../../database/database.js";
+import { getUserById, updateDebtGmailSync, type ExpenseDebt } from "../../database/database.js";
+import { decryptSecret } from "../../lib/credentialCrypto.js";
+import { syncDebtAgainstGmail } from "../../gmail/debtSync.js";
+import { isGmailConfigured, refreshAccessToken } from "./gmail.js";
 import type { AuthedRequest } from "../middleware/requireAuth.js";
 
 export const debtsRouter = Router();
@@ -42,6 +45,24 @@ async function toDebtPayload(userId: number, debt: ExpenseDebt) {
     additionalContext: debt.additional_context,
     desiredAction: debt.desired_action,
     selectedItems: debt.selected_items_json ? JSON.parse(debt.selected_items_json) : null,
+    gmailSync: toGmailSyncPayload(debt),
+  };
+}
+
+/** Shared shape for the persisted result of the last Gmail Sync check on this debt (if any) — see
+ * backend/gmail/debtSync.ts and updateDebtGmailSync in database.ts. Null until "Sync" has been used
+ * at least once on this debt. */
+function toGmailSyncPayload(debt: ExpenseDebt) {
+  if (!debt.gmail_sync_status) return null;
+  return {
+    status: debt.gmail_sync_status,
+    checkedAt: debt.gmail_sync_checked_at,
+    confidence: debt.gmail_sync_confidence,
+    emailId: debt.gmail_sync_email_id,
+    emailDate: debt.gmail_sync_email_date,
+    sender: debt.gmail_sync_sender,
+    subject: debt.gmail_sync_subject,
+    reason: debt.gmail_sync_reason,
   };
 }
 
@@ -214,6 +235,101 @@ debtsRouter.post("/:id/paid", async (req, res) => {
     return;
   }
   res.json(await toDebtPayload(userId, updated));
+});
+
+/**
+ * User-initiated, single-debt Gmail check ("Sync" button — see backend/gmail/debtSync.ts). Always
+ * responds 200 with a structured `status` — same convention as POST /api/gmail/verify — since
+ * GMAIL_NOT_CONNECTED / GMAIL_PERMISSION_REQUIRED / SYNC_ERROR are expected, non-exceptional
+ * outcomes for the frontend to render, not HTTP errors. 404 is reserved for a genuinely missing or
+ * not-owned debt. When a payment email matches on all three signals (person/name + date + exact
+ * amount — see backend/gmail/debtSync.ts), the debt is marked paid right here, through the same
+ * agent.markDebtPaid the manual POST /:id/paid uses (thank-you message, reminders stop), and the
+ * response carries the new `debtStatus`/`paidAt` so the UI flips to Paid immediately. No match →
+ * the debt is left unpaid.
+ */
+debtsRouter.post("/:id/sync", async (req, res) => {
+  const userId = (req as unknown as AuthedRequest).userId;
+  const debt = await debtSkill.getDebt(userId, Number(req.params.id));
+  if (!debt) {
+    res.status(404).json({ error: "Debt not found." });
+    return;
+  }
+
+  if (!isGmailConfigured()) {
+    res.json({ status: "GMAIL_NOT_CONNECTED" });
+    return;
+  }
+  const user = await getUserById(userId);
+  if (!user?.gmail_refresh_token) {
+    res.json({ status: "GMAIL_NOT_CONNECTED" });
+    return;
+  }
+
+  const person = await profileSkill.findPersonById(userId, debt.person_id);
+  if (!person) {
+    res.status(400).json({ error: "This debt has no linked person to check payment for." });
+    return;
+  }
+
+  try {
+    let accessToken: string;
+    try {
+      const refreshToken = decryptSecret(user.gmail_refresh_token);
+      const tokens = await refreshAccessToken(refreshToken);
+      accessToken = tokens.access_token;
+    } catch (error) {
+      if ((error as { invalidGrant?: boolean } | null)?.invalidGrant) {
+        // Unlike the background scanner, this is a user-initiated action — report it so the
+        // frontend can prompt a reconnect, rather than silently clearing the connection here.
+        res.json({ status: "GMAIL_PERMISSION_REQUIRED" });
+        return;
+      }
+      throw error;
+    }
+
+    const expense = await debtSkill.getExpenseById(userId, debt.expense_id);
+    const result = await syncDebtAgainstGmail({
+      accessToken,
+      userId,
+      debt,
+      person,
+      expenseDate: expense?.expense_date ?? null,
+    });
+
+    const updated = await updateDebtGmailSync(userId, debt.id, {
+      status: result.status,
+      confidence: result.confidence,
+      emailId: result.emailId,
+      emailDate: result.emailDate,
+      sender: result.sender,
+      subject: result.subject,
+      reason: result.reason,
+    });
+
+    const paid = result.status === "PAYMENT_FOUND" ? await agent.markDebtPaid(userId, debt.id) : undefined;
+    if (paid) {
+      console.log(`[gmail-sync] Debt ${debt.id} (user ${userId}) matched Gmail message ${result.emailId} on name + date + amount — marked paid.`);
+    }
+    const current = paid ?? updated ?? debt;
+
+    res.json({
+      status: result.status,
+      debtStatus: current.status,
+      paidAt: current.paid_at,
+      checkedAt: updated?.gmail_sync_checked_at ?? new Date().toISOString(),
+      confidence: result.confidence,
+      emailId: result.emailId,
+      emailDate: result.emailDate,
+      sender: result.sender,
+      subject: result.subject,
+      reason: result.reason,
+    });
+  } catch (error) {
+    // Gmail API error, rate limit, AI failure, network failure — never leak internals to the client.
+    console.error(`[gmail-sync] Sync failed for debt ${debt.id} (user ${userId}):`, error);
+    res.json({ status: "SYNC_ERROR" });
+  }
 });
 
 /** Removes this debt ("send request") and its own send-history only — never the person or expense it references. */
