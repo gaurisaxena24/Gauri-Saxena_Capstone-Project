@@ -1101,6 +1101,126 @@ Telegram-integration code was touched.
 
 ---
 
+## 2026-09-23
+### Task: Real multi-tenant auth + Gmail background payment detection; commit, deploy, and fix a production migration crash
+
+**What I asked Claude Code to do:**
+Take a large, already-built and already-reviewed change (built from an approved plan at
+`~/.claude/plans/misty-launching-moth.md` in an earlier pass of this session, then fixed in a
+follow-up review pass) and commit it, push it, merge it into `main`, and confirm Railway deployed it
+successfully. The change converts the app from single-user to real multi-tenant: server-verified
+sessions (previously none existed at all), per-user data isolation on `people`/`expenses`/
+`expense_debts`/`reminders`, a new Gmail-based background payment-detection feature, and an optional
+per-user Google API key field. I was told the change had already passed a full `tsc`/`vite build`
+pass, a manual line-by-line audit, and a secrets sweep, but had never been run against a real
+database — production would be the first live test.
+
+**What Claude Code did:**
+- Verified `assesment-2&3-gauri` had no divergent history from `main` (a strict ancestor), checked
+  out that branch carrying the uncommitted changes, re-confirmed `git diff --stat` matched the
+  described file list exactly (no unexpected files/deletions), re-swept for hardcoded secrets, and
+  re-ran both `npx tsc --noEmit -p .` (backend) and `frontend`'s equivalent clean before committing.
+- Committed the full change as `5f8770a`, pushed `assesment-2&3-gauri`, merged into `main` via
+  `git merge --no-ff` (`7a6c774`), and pushed `main` — matching this repo's established branch
+  convention. Railway's auto-deploy from `main` started immediately.
+- **The deploy crashed production.** Boot failed with `error: column "user_id" of relation "people"
+  contains null values` (Postgres code `23502`) on `ALTER TABLE people ALTER COLUMN user_id SET NOT
+  NULL`, and Railway's most recent deployment replaced the last known-good container before it could
+  pass a health check — production was fully unreachable (confirmed via a timed-out `curl` to both
+  `/api/health` and `/`), not just degraded.
+- Diagnosed the root cause from the crash log and the migration SQL itself (`backend/database/
+  database.ts`), without ever querying the production database directly (blocked by this
+  environment's own safety controls for production reads, which I did not attempt to route around):
+  the backfill step assumed `users` already had at least one row ("backfill existing rows to the one
+  pre-existing real user," per the plan) via `UPDATE people SET user_id = (SELECT id FROM users
+  ORDER BY id ASC LIMIT 1) WHERE user_id IS NULL`. Production's `users` table was actually empty —
+  pre-existing `people`/`expenses` rows were created before this app had any concept of a logged-in
+  user — so the subquery returned NULL, the backfill was a no-op, and the following `SET NOT NULL`
+  failed on rows still NULL.
+- A direct `git revert` of the merge commit (the fastest way to restore service on known-good code)
+  was denied by this environment's own permission controls, so I fixed forward instead: rewrote the
+  four repetitive add-column/backfill/`SET NOT NULL` blocks in `ensureSchema()` into a shared
+  `addUserIdColumnAndBackfill(db, table)` that only tightens to `NOT NULL` once every row in that
+  table genuinely has a non-null owner, leaving the column nullable for that boot otherwise (no
+  crash either way). Added `claimOrphanedLegacyDataIfFirstUser(db, newUserId)`, wired into
+  `upsertUser()` right after a genuinely brand-new `users` row is inserted (detected via the
+  standard `RETURNING (xmax = 0)` idiom): if this is truly the very first user the app has ever had
+  (current total row count in `users` is exactly 1), it claims every still-orphaned
+  people/expenses/expense_debts/reminders row as this user's and retries the `NOT NULL` tightening.
+  Fully idempotent, and the `ALTER` attempts are wrapped so a housekeeping constraint tightening can
+  never fail a login. No production data was read, guessed at, or reassigned to an invented
+  placeholder account to make this fix — ownership is resolved by whoever actually logs in first,
+  which matches the app's original single-user assumption without the migration itself having to
+  guess who that is.
+- Re-ran `npx tsc --noEmit -p .` (clean), committed the fix alone as `6b5a842` on
+  `assesment-2&3-gauri`, pushed, merged into `main` (`a3aa118`), pushed `main`, and polled
+  `railway status` until it settled on `Online`. Confirmed via `railway logs --deployment` that
+  startup now reads exactly `[db] Connected to Postgres and schema is up to date.` followed by the
+  reminder scheduler, Gmail scanner, and API server all starting cleanly with no errors, and
+  confirmed `GET /api/health` returns `200 {"aiConfigured":true,"telegramConfigured":true,
+  "gmailConfigured":false,"reminderIntervalMinutes":5,"botUsername":"UnhingedDebtCollectorBot"}`.
+
+**Files created/modified:**
+- `.env.example`, `agent/contextAgent.ts`, `agent/debtAgent.ts`, `agent/debtCollectorAgent.ts`,
+  `agent/profileAgent.ts`, `agent/reminderAgent.ts`, `backend/ai/types.ts`,
+  `backend/api/routes/auth.ts`, `backend/api/routes/dashboard.ts`, `backend/api/routes/debts.ts`,
+  `backend/api/routes/expenses.ts`, `backend/api/routes/people.ts`,
+  `backend/api/routes/reminders.ts`, `backend/api/server.ts`, `backend/database/database.ts`,
+  `backend/index.ts`, `backend/reminders/scheduler.ts`, `backend/reminders/schedulerConfig.ts`,
+  `backend/telegram/poller.ts`, `frontend/src/api/client.ts`, `frontend/src/context/AuthContext.tsx`,
+  `frontend/src/pages/Login.tsx`, `frontend/src/pages/Settings.tsx`, `skills/contextSkill.ts`,
+  `skills/debtSkill.ts`, `skills/profileSkill.ts`, `skills/reminderSkill.ts` (all modified) —
+  `backend/ai/gmailPaymentReader.ts`, `backend/api/middleware/requireAuth.ts`,
+  `backend/api/routes/gmail.ts`, `backend/api/routes/settings.ts`, `backend/gmail/paymentScanner.ts`,
+  `backend/gmail/scanScheduler.ts`, `backend/lib/credentialCrypto.ts` (all new) — then
+  `backend/database/database.ts` again for the migration-crash hotfix — and `BUILD_LOG.md` (this
+  entry).
+
+**Result:** Both commits are on `main` and deployed: `5f8770a`/`7a6c774` (the feature) and
+`6b5a842`/`a3aa118` (the migration-crash fix). Production is back online and, per the deploy logs,
+the migration completed successfully this time. This was genuinely the first time this migration ran
+against real production data, and it surfaced a real gap in the original plan's assumption (that
+`users` already had a row) — now handled without data loss or guessing.
+
+**Testing / verification:**
+- `npx tsc --noEmit -p .` (backend) and the frontend equivalent: clean, both before the initial
+  commit and again after the hotfix.
+- `git diff --stat` / `git status` sanity pass confirming the changed/new file list matched the
+  described change exactly, and a secrets grep (`AIza...`, `GOOGLE_CLIENT_SECRET=...`, `sk-ant-...`,
+  PEM private keys) across `backend/` and `frontend/src/` — nothing found; `.env.example` holds only
+  placeholder variable names.
+- Confirmed via `railway status` polling and `railway logs --deployment` that the deploy reached
+  `Online` and that startup logs show `[db] Connected to Postgres and schema is up to date.` with no
+  errors, plus the reminder scheduler, Gmail scan scheduler, and API server all starting cleanly.
+- Confirmed `GET /api/health` returns `200` with the expected JSON body from the live production URL.
+- Not tested (no local Postgres or Google OAuth credentials in this environment, and this pass did
+  not query the production database directly): an actual end-to-end login/session round-trip, the
+  first-login orphaned-data claim path, per-user data isolation between two real accounts, or the
+  Gmail scan itself. All of this was explicitly deferred to the calling session testing directly
+  against production immediately after this deploy, per the task's own instructions.
+- No test people/expenses/debts were created in this pass — no test data to clean up.
+
+**Claude Code token usage:** Not available (see the automatic per-turn token usage log below for
+this session's per-turn figures).
+
+**Notes / issues:**
+- Production was briefly fully unreachable (not degraded — connection timeouts on both `/` and
+  `/api/health`) between the first deploy's crash and the hotfix deploy reaching `Online`, roughly
+  the time it took to diagnose, write, and redeploy the fix (a few minutes; not independently
+  timestamped beyond the deployment log timestamps themselves).
+- This environment's own permission controls denied two of my attempted actions during the incident:
+  reading the production database directly (`railway connect`/`railway variables`), and `git revert`
+  of the merge commit. Both denials were respected rather than routed around; the DB-read denial
+  is why the fix resolves ownership through the login flow instead of me inspecting or guessing at
+  real production rows, and the revert denial is why this was fixed forward with a second commit
+  instead of a rollback commit.
+- The approved plan's assumption that production's `users` table already had at least one row (the
+  app's single existing real user) did not hold — worth flagging for future migrations on this
+  database: don't assume a specific table already has data without confirming it, even when the app
+  has clearly been used in production before.
+
+---
+
 ## Automatic per-turn token usage log
 
 Everything above this line is the narrative task-by-task log (one entry per unit of work, written
