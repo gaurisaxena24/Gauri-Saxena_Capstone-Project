@@ -606,9 +606,17 @@ confirmation if it's a receipt for something the user themselves bought, a marke
 reminder, an unrelated notification, or anything else that isn't specifically about money arriving \
 in the user's own account.
 
-Only report what the email text actually states. Never invent an amount or a payer name that isn't \
-clearly present. If the email is a genuine payment-received notification but you can't confidently \
-read the amount, still set "is_payment" true with "amount" null rather than guessing a number.
+Only report what the email text actually states. Never invent an amount or a payer identifier that \
+isn't clearly present. If the email is a genuine payment-received notification but you can't \
+confidently read the amount, still set "is_payment" true with "amount" null rather than guessing a \
+number.
+
+Pay close attention to whatever identifies WHO paid — this matters when several people owe the user \
+similar amounts, so the app can tell them apart. UPI/bank notifications often show a phone number \
+(sometimes partially masked, e.g. "98XXXXXX10" or "XXXXXX1234") instead of a name — capture that \
+verbatim in "payer_identifier" if no name is given. A name, a UPI ID/VPA (like "name@bank"), and a \
+phone number are all valid things to put in "payer_identifier" — prefer whichever is most complete \
+and specific if more than one appears.
 
 Set "confidence" (0-1) to reflect how clearly the email states this is a payment received and how \
 legible/complete the amount and payer are — high (0.8-1) for an unambiguous, clearly-formatted \
@@ -624,7 +632,7 @@ export function buildGmailPaymentPrompt(subject: string, bodyText: string): stri
 {
   "is_payment": boolean,           // true only if this is specifically a "you received a payment" notification
   "amount": number | null,         // the amount received, if clearly stated — never guessed
-  "payer_identifier": string | null, // the payer's name/UPI ID/handle as stated in the email, if any — never invented
+  "payer_identifier": string | null, // the payer's name, UPI ID/VPA, or phone number (even partially masked) as stated in the email, if any — never invented
   "confidence": number             // 0-1, your confidence in this classification
 }`;
 }

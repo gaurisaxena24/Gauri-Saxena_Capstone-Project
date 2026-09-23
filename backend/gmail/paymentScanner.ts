@@ -6,9 +6,11 @@
  * debts still UNPAID). This file's only job is deciding *when* to call it.
  *
  * Deliberately conservative: matches on amount against this user's own unpaid debts, and — only
- * when several debts share that amount — uses the email's stated payer name/identifier to break
- * the tie (see resolveMatch below). Anything still ambiguous, or with zero matches, is left alone
- * for the user to reconcile manually — a wrong auto-mark-paid would be worse than a missed one.
+ * when several debts share that amount (the common case for an evenly split group expense) — uses
+ * whatever identified the payer (name, UPI ID, or phone number, even partially masked) to break the
+ * tie against each candidate's saved name/username/phone (see resolveMatch below). Anything still
+ * ambiguous, or with zero matches, is left alone for the user to reconcile manually — a wrong
+ * auto-mark-paid would be worse than a missed one.
  */
 
 import * as agent from "../../agent/debtCollectorAgent.js";
@@ -98,22 +100,53 @@ async function fetchMessage(accessToken: string, messageId: string): Promise<{ s
  * cadence — same guard shape as backend/reminders/scheduler.ts's debtsCurrentlyProcessing. */
 const usersCurrentlyScanning = new Set<number>();
 
-function namesLikelyMatch(personName: string, telegramUsername: string, payerIdentifier: string): boolean {
+const MIN_PHONE_DIGIT_MATCH = 4; // a masked "XXXXXX6780" still reveals this many real trailing digits
+
+/**
+ * UPI/bank notifications almost always mask a phone number by hiding the middle and showing only
+ * the last few digits (e.g. "XXXXXX6780"). Deliberately reads only the identifier's *trailing*
+ * contiguous digit run, not every digit anywhere in the string — stripping non-digits globally would
+ * wrongly concatenate a separately-visible prefix (e.g. "98XXXXXX10" naively becomes "9810", which
+ * isn't really a substring of the actual number at all). A short trailing run below the threshold is
+ * left unmatched rather than risked, since it's too generic to reliably identify one person.
+ */
+function phoneNumbersLikelyMatch(savedPhone: string, identifier: string): boolean {
+  const savedDigits = savedPhone.replace(/\D/g, "");
+  const trailingRun = identifier.match(/(\d{4,})\D*$/)?.[1] ?? "";
+  if (savedDigits.length < MIN_PHONE_DIGIT_MATCH || trailingRun.length < MIN_PHONE_DIGIT_MATCH) return false;
+  return savedDigits.endsWith(trailingRun);
+}
+
+/**
+ * Whoever paid is identified by whatever the email actually gave us — a name, a UPI ID, or a phone
+ * number (often partially masked). This is the main lever for telling apart several people who owe
+ * the exact same amount (e.g. an even group-expense split), so it checks every saved field that
+ * could plausibly appear in a payment notification, not just the display name.
+ */
+function payerIdentifierLikelyMatchesPerson(
+  person: { name: string; telegram_username: string; phone_number: string | null },
+  payerIdentifier: string
+): boolean {
   const identifier = payerIdentifier.trim().toLowerCase();
-  const name = personName.trim().toLowerCase();
-  const username = telegramUsername.trim().toLowerCase();
-  if (!identifier || !name) return false;
+  if (!identifier) return false;
+  const name = person.name.trim().toLowerCase();
+  const username = person.telegram_username.trim().toLowerCase();
   // Deliberately loose (substring either direction) — a UPI app might show "Raj K." for a contact
   // saved as "Raj Kumar", or just their @handle. This only needs to break a tie among debts that
   // already matched on amount, not stand alone as the whole match.
-  return identifier.includes(name) || name.includes(identifier) || (Boolean(username) && identifier.includes(username));
+  if (name && (identifier.includes(name) || name.includes(identifier))) return true;
+  if (username && identifier.includes(username)) return true;
+  if (person.phone_number && phoneNumbersLikelyMatch(person.phone_number, payerIdentifier)) return true;
+  return false;
 }
 
 /**
  * Amount alone picks the debt when there's exactly one candidate. When several unpaid debts share
- * the same amount, the email's stated payer name/identifier (if the model extracted one) is used
- * to break the tie — but only when it points at exactly one of the candidates; anything less
- * certain is left alone rather than guessing between two similarly-plausible people.
+ * the same amount — the common case for an evenly split group expense, where everyone owes the
+ * identical amount — the email's stated payer identifier (name, UPI ID, or phone number, whatever
+ * the model could read) is used to break the tie against each candidate's saved name, Telegram
+ * username, and phone number. Only acts when it points at exactly one of the candidates; anything
+ * still ambiguous is left alone rather than guessing between two similarly-plausible people.
  */
 async function resolveMatch(
   userId: number,
@@ -126,10 +159,10 @@ async function resolveMatch(
   const candidates = await Promise.all(
     matches.map(async (debt) => ({ debt, person: await profileAgent.findPersonById(userId, debt.person_id) }))
   );
-  const nameMatches = candidates.filter(
-    ({ person }) => person && namesLikelyMatch(person.name, person.telegram_username, payerIdentifier)
+  const identifierMatches = candidates.filter(
+    ({ person }) => person && payerIdentifierLikelyMatchesPerson(person, payerIdentifier)
   );
-  return nameMatches.length === 1 ? nameMatches[0].debt : undefined;
+  return identifierMatches.length === 1 ? identifierMatches[0].debt : undefined;
 }
 
 export async function scanUserGmailForPayments(user: UserRecord): Promise<void> {
