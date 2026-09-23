@@ -8,6 +8,9 @@ import { buildReminderContext } from "../skills/contextSkill.js";
 import type { ReminderContext } from "../backend/ai/types.js";
 import type { Expense, ExpenseDebt, Person } from "../backend/database/database.js";
 
-export function buildContext(params: { person: Person; expense: Expense; debt: ExpenseDebt }): Promise<ReminderContext> {
-  return buildReminderContext(params);
+export function buildContext(
+  userId: number,
+  params: { person: Person; expense: Expense; debt: ExpenseDebt }
+): Promise<ReminderContext> {
+  return buildReminderContext(userId, params);
 }

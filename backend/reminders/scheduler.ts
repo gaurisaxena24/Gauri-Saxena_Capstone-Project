@@ -36,16 +36,16 @@ import { getReminderIntervalMinutes } from "./schedulerConfig.js";
 /** Never fires more than once per debt at a time, even if a tick takes longer than the poll cadence. */
 const debtsCurrentlyProcessing = new Set<number>();
 
-async function processDebt(debtId: number): Promise<void> {
+async function processDebt(userId: number, debtId: number): Promise<void> {
   if (debtsCurrentlyProcessing.has(debtId)) return;
   debtsCurrentlyProcessing.add(debtId);
   try {
-    const debt = await debtSkill.getDebt(debtId);
+    const debt = await debtSkill.getDebt(userId, debtId);
     if (!debt || debt.status !== "UNPAID") return; // already paid / removed since the query ran
 
     const [expense, person] = await Promise.all([
-      debtSkill.getExpenseById(debt.expense_id),
-      profileSkill.findPersonById(debt.person_id),
+      debtSkill.getExpenseById(userId, debt.expense_id),
+      profileSkill.findPersonById(userId, debt.person_id),
     ]);
     if (!expense || !person) {
       console.error(`[reminder-scheduler] Debt ${debtId} is missing its expense or person — skipping.`);
@@ -55,15 +55,15 @@ async function processDebt(debtId: number): Promise<void> {
     // Always fresh — never the context cached on the debt row at attach-time — so
     // history.remindersForThisDebt/lastToneForThisDebt reflect every reminder sent so far,
     // including ones this scheduler itself already sent on earlier ticks.
-    const context = await contextAgent.buildContext({ person, expense, debt });
+    const context = await contextAgent.buildContext(userId, { person, expense, debt });
     const escalation = escalationForFollowUp(context.history.remindersForThisDebt, shouldStayFormal(person));
 
     // Persist the refreshed context too, so DebtDetail's "AI context used" panel stays accurate
     // for a debt that's been sitting in automatic mode for a while, exactly like the one-time
     // context built at attach-time already does for the first reminder.
-    const debtWithFreshContext = (await debtSkill.saveContext(debt.id, context)) ?? debt;
+    const debtWithFreshContext = (await debtSkill.saveContext(userId, debt.id, context)) ?? debt;
 
-    const { debt: withDraft } = await agent.generateDraft({
+    const { debt: withDraft } = await agent.generateDraft(userId, {
       debt: debtWithFreshContext,
       context,
       forcedTone: escalation.tone,
@@ -73,13 +73,13 @@ async function processDebt(debtId: number): Promise<void> {
     // Close the race window between this tick starting and the user clicking "Mark as paid" — the
     // debt is re-checked immediately before the actual send, not just once at the top of this
     // function (generation above can take a couple of seconds against the real Groq API).
-    const latest = await debtSkill.getDebt(debt.id);
+    const latest = await debtSkill.getDebt(userId, debt.id);
     if (!latest || latest.status !== "UNPAID") {
       console.log(`[reminder-scheduler] Debt ${debtId} was marked paid mid-cycle — not sending.`);
       return;
     }
 
-    const result = await agent.sendReminder(withDraft, person);
+    const result = await agent.sendReminder(userId, withDraft, person);
     if (result.success) {
       console.log(
         `[reminder-scheduler] Sent automatic follow-up (stage ${escalation.stage}, tone ${escalation.tone}) for debt ${debtId}.`
@@ -107,7 +107,10 @@ export async function runReminderSchedulerTick(): Promise<void> {
   }
 
   for (const debt of due) {
-    await processDebt(debt.id);
+    // getDebtsDueForAutomaticFollowUp deliberately sweeps every tenant's due debts each tick (see
+    // its own doc comment) — each row already carries its owning user_id, so that's what scopes
+    // every downstream lookup back to the correct tenant.
+    await processDebt(debt.user_id, debt.id);
   }
 }
 

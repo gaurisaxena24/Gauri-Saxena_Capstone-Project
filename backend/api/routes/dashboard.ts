@@ -2,13 +2,14 @@ import { Router } from "express";
 import { getDashboardStats, type ExpenseDebt } from "../../database/database.js";
 import * as debtSkill from "../../../skills/debtSkill.js";
 import * as profileSkill from "../../../skills/profileSkill.js";
+import type { AuthedRequest } from "../middleware/requireAuth.js";
 
 export const dashboardRouter = Router();
 
-async function toRecentDebt(debt: ExpenseDebt) {
+async function toRecentDebt(userId: number, debt: ExpenseDebt) {
   const [expense, person] = await Promise.all([
-    debtSkill.getExpenseById(debt.expense_id),
-    profileSkill.findPersonById(debt.person_id),
+    debtSkill.getExpenseById(userId, debt.expense_id),
+    profileSkill.findPersonById(userId, debt.person_id),
   ]);
   return {
     id: debt.id,
@@ -23,8 +24,9 @@ async function toRecentDebt(debt: ExpenseDebt) {
   };
 }
 
-dashboardRouter.get("/", async (_req, res) => {
-  const [stats, recentDebts] = await Promise.all([getDashboardStats(), debtSkill.listAllDebts(5)]);
-  const recent = await Promise.all(recentDebts.map(toRecentDebt));
+dashboardRouter.get("/", async (req, res) => {
+  const userId = (req as AuthedRequest).userId;
+  const [stats, recentDebts] = await Promise.all([getDashboardStats(userId), debtSkill.listAllDebts(userId, 5)]);
+  const recent = await Promise.all(recentDebts.map((d) => toRecentDebt(userId, d)));
   res.json({ stats, recent });
 });

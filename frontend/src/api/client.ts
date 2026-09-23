@@ -14,6 +14,10 @@ export class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...init,
+    // Carries the session cookie (see backend/api/middleware/requireAuth.ts) on every request —
+    // same-origin by default already sends it, but this makes it explicit and correct if frontend
+    // and API ever end up on different origins.
+    credentials: "include",
     headers:
       init?.body && !(init.body instanceof FormData)
         ? { "Content-Type": "application/json", ...init.headers }
@@ -52,9 +56,16 @@ export interface AuthedUser {
 export const login = (telegramUsername: string) =>
   request<AuthedUser>("/auth/login", { method: "POST", body: json({ telegramUsername }) });
 
+export const logoutApi = () => request<{ loggedOut: true }>("/auth/logout", { method: "POST" });
+
+/** Verifies the session cookie against the server rather than trusting the cached localStorage
+ * blob — see frontend/src/context/AuthContext.tsx. Throws (401) if not logged in. */
+export const getCurrentUser = () => request<AuthedUser>("/auth/me");
+
 export interface HealthStatus {
   aiConfigured: boolean;
   telegramConfigured: boolean;
+  gmailConfigured: boolean;
   /** Minutes between automatic follow-up reminders once a debt's first reminder has been sent — see backend/reminders/schedulerConfig.ts. */
   reminderIntervalMinutes: number;
   /** The bot's real @username (no leading @), fetched from Telegram's getMe and cached server-side. Null if Telegram isn't configured or the lookup failed. */
@@ -62,6 +73,36 @@ export interface HealthStatus {
 }
 
 export const getHealth = () => request<HealthStatus>("/health");
+
+// ---- Gmail -----------------------------------------------------------------
+
+export interface GmailStatus {
+  connected: boolean;
+  emailAddress?: string;
+  connectedAt?: string;
+}
+
+export const getGmailStatus = () => request<GmailStatus>("/gmail/status");
+
+export const verifyGmail = () =>
+  request<{ verified: boolean; emailAddress?: string; reason?: string }>("/gmail/verify", { method: "POST" });
+
+export const disconnectGmail = () => request<{ connected: false }>("/gmail/disconnect", { method: "POST" });
+
+// ---- Optional Google API key -------------------------------------------------
+// Separate from Gmail (which is OAuth-based, not a pasted key) — kept available in Settings but
+// not currently required or consumed by anything.
+
+export interface GoogleApiKeyStatus {
+  configured: boolean;
+  maskedKey?: string;
+}
+
+export const getGoogleApiKeyStatus = () => request<GoogleApiKeyStatus>("/settings/google-api-key");
+
+/** Pass an empty string to clear the saved key. */
+export const saveGoogleApiKey = (apiKey: string) =>
+  request<GoogleApiKeyStatus>("/settings/google-api-key", { method: "POST", body: json({ apiKey }) });
 
 // ---- People -----------------------------------------------------------------
 

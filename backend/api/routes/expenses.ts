@@ -9,6 +9,7 @@ import { isGroqConfigured } from "../../ai/groqClient.js";
 import { AiNotConfiguredError, AiRequestError } from "../../ai/types.js";
 import { uploadImage, uploadPathToUrl } from "../uploads.js";
 import type { Expense, ExpenseDebt } from "../../database/database.js";
+import type { AuthedRequest } from "../middleware/requireAuth.js";
 
 export const expensesRouter = Router();
 
@@ -56,6 +57,7 @@ function toExpensePayload(
 
 /** Manual entry — never touches Groq. */
 expensesRouter.post("/", async (req, res) => {
+  const userId = (req as AuthedRequest).userId;
   const { amount, currency, date, merchant, category, description, paymentMethod, notes } = req.body ?? {};
   const total = Number(amount);
   if (!Number.isFinite(total) || total <= 0) {
@@ -63,7 +65,7 @@ expensesRouter.post("/", async (req, res) => {
     return;
   }
 
-  const expense = await agent.createManualExpense({
+  const expense = await agent.createManualExpense(userId, {
     amount: total,
     currency: currency || "INR",
     date: date || null,
@@ -79,6 +81,7 @@ expensesRouter.post("/", async (req, res) => {
 
 /** Image entry — Groq Vision if configured/available, else automatic OCR fallback. Never fakes a result. */
 expensesRouter.post("/extract", (req, res) => {
+  const userId = (req as AuthedRequest).userId;
   uploadImage.single("image")(req, res, async (uploadError) => {
     if (uploadError) {
       debugLog("multer/upload rejected the request:", uploadError.message);
@@ -110,7 +113,7 @@ expensesRouter.post("/extract", (req, res) => {
       const { extraction, method, extractionFailed } = await agent.readImageExpense(imageBuffer, mediaType);
       debugLog(`extraction done via ${method}, extractionFailed=${Boolean(extractionFailed)}, items=${extraction.lineItems.length}`);
 
-      const expense = await agent.createImageExpense({ extraction, method, imagePath: req.file.path });
+      const expense = await agent.createImageExpense(userId, { extraction, method, imagePath: req.file.path });
       res.status(201).json(toExpensePayload(expense, { extractionMethod: method, extractionFailed }));
     } catch (error) {
       await cleanupUpload();
@@ -129,8 +132,9 @@ expensesRouter.post("/extract", (req, res) => {
   });
 });
 
-expensesRouter.get("/", async (_req, res) => {
-  const expenses = await debtSkill.listAllExpenses();
+expensesRouter.get("/", async (req, res) => {
+  const userId = (req as AuthedRequest).userId;
+  const expenses = await debtSkill.listAllExpenses(userId);
   res.json({ expenses: expenses.map((e) => toExpensePayload(e)) });
 });
 
@@ -140,10 +144,10 @@ expensesRouter.get("/", async (_req, res) => {
  * instead of navigating anywhere): amount, paid/unpaid status, the generated reminder message, and
  * the full send history all live here, one level down from the expense they belong to.
  */
-async function toExpenseDebtDetail(debt: ExpenseDebt) {
+async function toExpenseDebtDetail(userId: number, debt: ExpenseDebt) {
   const [person, reminders] = await Promise.all([
-    profileSkill.findPersonById(debt.person_id),
-    reminderSkill.historyForDebt(debt.id),
+    profileSkill.findPersonById(userId, debt.person_id),
+    reminderSkill.historyForDebt(userId, debt.id),
   ]);
   return {
     id: debt.id,
@@ -175,18 +179,23 @@ async function toExpenseDebtDetail(debt: ExpenseDebt) {
 }
 
 expensesRouter.get("/:id", async (req, res) => {
-  const expense = await debtSkill.getExpenseById(Number(req.params.id));
+  const userId = (req as unknown as AuthedRequest).userId;
+  const expense = await debtSkill.getExpenseById(userId, Number(req.params.id));
   if (!expense) {
     res.status(404).json({ error: "Expense not found." });
     return;
   }
-  const debts = await debtSkill.getDebtsByExpense(expense.id);
-  res.json({ ...toExpensePayload(expense), debts: await Promise.all(debts.map(toExpenseDebtDetail)) });
+  const debts = await debtSkill.getDebtsByExpense(userId, expense.id);
+  res.json({
+    ...toExpensePayload(expense),
+    debts: await Promise.all(debts.map((d) => toExpenseDebtDetail(userId, d))),
+  });
 });
 
 expensesRouter.patch("/:id", async (req, res) => {
+  const userId = (req as unknown as AuthedRequest).userId;
   const id = Number(req.params.id);
-  const existing = await debtSkill.getExpenseById(id);
+  const existing = await debtSkill.getExpenseById(userId, id);
   if (!existing) {
     res.status(404).json({ error: "Expense not found." });
     return;
@@ -207,7 +216,7 @@ expensesRouter.patch("/:id", async (req, res) => {
     description,
     lineItems,
   } = req.body ?? {};
-  const updated = await debtSkill.editExpense(id, {
+  const updated = await debtSkill.editExpense(userId, id, {
     merchant: merchant !== undefined ? merchant : undefined,
     expenseDate: date !== undefined ? date : undefined,
     total: total !== undefined ? Number(total) : undefined,
@@ -234,8 +243,9 @@ expensesRouter.patch("/:id", async (req, res) => {
  * Best-effort deletes the uploaded image file, if any.
  */
 expensesRouter.delete("/:id", async (req, res) => {
+  const userId = (req as unknown as AuthedRequest).userId;
   const id = Number(req.params.id);
-  const attachedDebts = await debtSkill.getDebtsByExpense(id);
+  const attachedDebts = await debtSkill.getDebtsByExpense(userId, id);
   if (attachedDebts.length > 0) {
     res.status(409).json({
       error: `This expense has ${attachedDebts.length} debt(s) still attached. Remove ${
@@ -244,7 +254,7 @@ expensesRouter.delete("/:id", async (req, res) => {
     });
     return;
   }
-  const removed = await agent.removeExpense(id);
+  const removed = await agent.removeExpense(userId, id);
   if (!removed) {
     res.status(404).json({ error: "Expense not found." });
     return;

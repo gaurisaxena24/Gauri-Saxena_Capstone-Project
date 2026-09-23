@@ -27,6 +27,7 @@ import { startTelegramPoller } from "./telegram/poller.js";
 import { startApiServer } from "./api/server.js";
 import { ensureDatabaseReady } from "./database/database.js";
 import { startReminderScheduler } from "./reminders/scheduler.js";
+import { startGmailScanScheduler } from "./gmail/scanScheduler.js";
 
 const server = new McpServer({
   name: "unhinged-debt-collector-mcp-server",
@@ -132,6 +133,18 @@ async function main() {
       "[reminder-scheduler] Skipping the automatic reminder scheduler on this instance (not Railway, " +
         "ENABLE_REMINDER_SCHEDULER not set) so it doesn't double-send follow-ups alongside the deployed instance. " +
         "Manually sending a debt's first reminder still works normally."
+    );
+  }
+  // Same "only one process may act" reasoning as shouldRunReminderScheduler() above — reuses its
+  // exact activation gate rather than inventing a second one, since running this scanner on both a
+  // local dev instance and the deployed instance at once would just be wasteful double-processing,
+  // not a correctness problem (gmail_processed_messages dedupes either way).
+  if (shouldRunReminderScheduler()) {
+    startGmailScanScheduler();
+  } else {
+    console.log(
+      "[gmail-scan] Skipping the Gmail payment scanner on this instance (not Railway, " +
+        "ENABLE_REMINDER_SCHEDULER not set)."
     );
   }
   startApiServer();

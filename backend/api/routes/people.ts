@@ -5,6 +5,7 @@ import * as debtSkill from "../../../skills/debtSkill.js";
 import * as reminderSkill from "../../../skills/reminderSkill.js";
 import { verifyPersonByCode, type Person, type PersonWithStats } from "../../database/database.js";
 import { sendTelegramMessage } from "../../tools/sendTelegramMessage.js";
+import type { AuthedRequest } from "../middleware/requireAuth.js";
 
 export const peopleRouter = Router();
 
@@ -37,12 +38,14 @@ function toPersonPayload(p: Person) {
   };
 }
 
-peopleRouter.get("/", async (_req, res) => {
-  const people = await profileSkill.listPeople();
+peopleRouter.get("/", async (req, res) => {
+  const userId = (req as AuthedRequest).userId;
+  const people = await profileSkill.listPeople(userId);
   res.json({ people: people.map(toPersonSummary) });
 });
 
 peopleRouter.post("/", async (req, res) => {
+  const userId = (req as AuthedRequest).userId;
   const { name, telegramUsername, relationship, notes, phoneNumber, keepFormal } = req.body ?? {};
   if (!name?.trim() || !telegramUsername?.trim()) {
     res.status(400).json({ error: "Name and Telegram username are required." });
@@ -50,7 +53,7 @@ peopleRouter.post("/", async (req, res) => {
   }
 
   try {
-    const person = await profileSkill.addPerson({
+    const person = await profileSkill.addPerson(userId, {
       name: name.trim(),
       telegramUsername,
       relationship: relationship?.trim() || undefined,
@@ -70,11 +73,11 @@ peopleRouter.post("/", async (req, res) => {
   }
 });
 
-async function buildPersonDetail(person: Person) {
-  const debtRows = await debtSkill.getDebtsByPerson(person.id);
+async function buildPersonDetail(userId: number, person: Person) {
+  const debtRows = await debtSkill.getDebtsByPerson(userId, person.id);
   const debts = await Promise.all(
     debtRows.map(async (d) => {
-      const expense = await debtSkill.getExpenseById(d.expense_id);
+      const expense = await debtSkill.getExpenseById(userId, d.expense_id);
       return {
         id: d.id,
         expenseId: d.expense_id,
@@ -91,18 +94,19 @@ async function buildPersonDetail(person: Person) {
   return {
     ...toPersonPayload(person),
     debts,
-    reminders: await reminderSkill.historyForPerson(person.id),
+    reminders: await reminderSkill.historyForPerson(userId, person.id),
   };
 }
 
 peopleRouter.get("/:id", async (req, res) => {
+  const userId = (req as unknown as AuthedRequest).userId;
   const id = Number(req.params.id);
-  const person = await profileSkill.findPersonById(id);
+  const person = await profileSkill.findPersonById(userId, id);
   if (!person) {
     res.status(404).json({ error: "Person not found." });
     return;
   }
-  res.json(await buildPersonDetail(person));
+  res.json(await buildPersonDetail(userId, person));
 });
 
 /**
@@ -117,22 +121,22 @@ peopleRouter.get("/:id", async (req, res) => {
  * receive a message.
  *
  * Explicitly disabled on the deployed Railway instance (same RAILWAY_ENVIRONMENT check as
- * shouldPollTelegram/shouldRunReminderScheduler in backend/index.ts): with no auth on this API,
- * leaving this reachable in production would let anyone who knows a person's id redirect their
- * real Telegram verification to an arbitrary chat ID of the caller's choosing.
+ * shouldPollTelegram/shouldRunReminderScheduler in backend/index.ts) — a local-dev-only escape
+ * hatch, not something any real app-user should be able to trigger against their own live data.
  */
 peopleRouter.post("/:id/verify-manually", async (req, res) => {
   if (process.env.RAILWAY_ENVIRONMENT) {
     res.status(403).json({ error: "Manual verification is disabled on the deployed instance; only local dev can use it." });
     return;
   }
+  const userId = (req as unknown as AuthedRequest).userId;
   const id = Number(req.params.id);
   const { chatId } = req.body ?? {};
   if (!chatId) {
     res.status(400).json({ error: "chatId is required." });
     return;
   }
-  const person = await profileSkill.findPersonById(id);
+  const person = await profileSkill.findPersonById(userId, id);
   if (!person) {
     res.status(404).json({ error: "Person not found." });
     return;
@@ -151,13 +155,14 @@ peopleRouter.post("/:id/verify-manually", async (req, res) => {
     res.status(500).json({ error: "Message delivered, but the verification code lookup failed unexpectedly." });
     return;
   }
-  res.json(await buildPersonDetail(verified));
+  res.json(await buildPersonDetail(userId, verified));
 });
 
 peopleRouter.patch("/:id", async (req, res) => {
+  const userId = (req as unknown as AuthedRequest).userId;
   const id = Number(req.params.id);
   const { name, relationship, notes, phoneNumber, keepFormal } = req.body ?? {};
-  const updated = await profileSkill.editPerson(id, {
+  const updated = await profileSkill.editPerson(userId, id, {
     name: name !== undefined ? name : undefined,
     relationship: relationship !== undefined ? relationship : undefined,
     notes: notes !== undefined ? notes : undefined,
@@ -168,7 +173,7 @@ peopleRouter.patch("/:id", async (req, res) => {
     res.status(404).json({ error: "Person not found." });
     return;
   }
-  res.json(await buildPersonDetail(updated));
+  res.json(await buildPersonDetail(userId, updated));
 });
 
 /**
@@ -178,8 +183,9 @@ peopleRouter.patch("/:id", async (req, res) => {
  * debts first (via the existing debt-remove action), then this person can go.
  */
 peopleRouter.delete("/:id", async (req, res) => {
+  const userId = (req as unknown as AuthedRequest).userId;
   const id = Number(req.params.id);
-  const attachedDebts = await debtSkill.getDebtsByPerson(id);
+  const attachedDebts = await debtSkill.getDebtsByPerson(userId, id);
   if (attachedDebts.length > 0) {
     res.status(409).json({
       error: `${attachedDebts.length} debt(s) are still attached to this person. Remove ${
@@ -188,7 +194,7 @@ peopleRouter.delete("/:id", async (req, res) => {
     });
     return;
   }
-  const removed = await agent.removePerson(id);
+  const removed = await agent.removePerson(userId, id);
   if (!removed) {
     res.status(404).json({ error: "Person not found." });
     return;

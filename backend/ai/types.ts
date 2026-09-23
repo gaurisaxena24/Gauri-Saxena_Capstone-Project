@@ -561,3 +561,70 @@ export function normalizeGeneratedThankYou(parsed: { message?: unknown }): strin
   if (!message) throw new AiRequestError("AI response was missing a valid thank-you message.");
   return stripEmDashes(message);
 }
+
+// ---------------------------------------------------------------------------
+// Gmail background payment detection (backend/gmail/paymentScanner.ts)
+// ---------------------------------------------------------------------------
+
+/** Raw model output — mapped defensively onto `GmailPaymentExtraction` immediately after parsing,
+ * same convention as `RawExpenseExtraction` above; nothing downstream sees this shape. */
+export interface RawGmailPaymentExtraction {
+  is_payment: boolean;
+  amount: number | null;
+  payer_identifier: string | null;
+  confidence: number;
+}
+
+export interface GmailPaymentExtraction {
+  isPayment: boolean;
+  amount: number | null;
+  payerIdentifier: string | null;
+  confidence: number;
+  /** Set when the model couldn't produce valid JSON at all — a genuinely unreadable/malformed
+   * email, not a real "this isn't a payment" classification. Same honest-uncertainty convention as
+   * ExpenseReadResult.extractionFailed. */
+  extractionFailed?: boolean;
+}
+
+export function emptyGmailPaymentExtraction(): GmailPaymentExtraction {
+  return { isPayment: false, amount: null, payerIdentifier: null, confidence: 0, extractionFailed: true };
+}
+
+export function mapRawGmailPaymentExtraction(raw: Partial<RawGmailPaymentExtraction>): GmailPaymentExtraction {
+  return {
+    isPayment: Boolean(raw.is_payment),
+    amount: typeof raw.amount === "number" ? raw.amount : null,
+    payerIdentifier: raw.payer_identifier ?? null,
+    confidence: typeof raw.confidence === "number" ? raw.confidence : 0,
+  };
+}
+
+export const GMAIL_PAYMENT_SYSTEM_PROMPT = `You read one email (subject + body text) from a user's Gmail inbox and decide whether it is a \
+payment/UPI/bank-transfer confirmation telling the user that someone paid them money — e.g. a UPI \
+app's "payment received" notification, a bank credit alert, or similar. It is NOT a payment \
+confirmation if it's a receipt for something the user themselves bought, a marketing email, a bill \
+reminder, an unrelated notification, or anything else that isn't specifically about money arriving \
+in the user's own account.
+
+Only report what the email text actually states. Never invent an amount or a payer name that isn't \
+clearly present. If the email is a genuine payment-received notification but you can't confidently \
+read the amount, still set "is_payment" true with "amount" null rather than guessing a number.
+
+Set "confidence" (0-1) to reflect how clearly the email states this is a payment received and how \
+legible/complete the amount and payer are — high (0.8-1) for an unambiguous, clearly-formatted \
+notification; lower (below 0.5) for an ambiguous or oddly-formatted email. A low confidence with \
+partially-filled fields is a valid, honest result.
+
+Respond with ONLY valid JSON. No markdown code fences, no prose before or after — just the JSON \
+object. If the email clearly isn't a payment notification at all, still return the full JSON shape \
+with "is_payment": false and the other fields null/0, rather than failing to produce valid JSON.`;
+
+export function buildGmailPaymentPrompt(subject: string, bodyText: string): string {
+  return `Email subject: ${subject}\n\nEmail body:\n${bodyText}\n\nRespond with ONLY this JSON shape, nothing else:
+{
+  "is_payment": boolean,           // true only if this is specifically a "you received a payment" notification
+  "amount": number | null,         // the amount received, if clearly stated — never guessed
+  "payer_identifier": string | null, // the payer's name/UPI ID/handle as stated in the email, if any — never invented
+  "confidence": number             // 0-1, your confidence in this classification
+}`;
+}

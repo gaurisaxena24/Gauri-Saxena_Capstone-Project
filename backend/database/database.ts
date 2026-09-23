@@ -26,6 +26,7 @@
  * complete, not partial.
  */
 
+import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 
 let pool: Pool | undefined;
@@ -99,6 +100,18 @@ function ensureSchema(): Promise<void> {
           telegram_username TEXT NOT NULL UNIQUE,
           created_at TEXT NOT NULL,
           last_login_at TEXT NOT NULL
+      );
+    `);
+
+    // Real per-request sessions — replaces trusting whatever the frontend's localStorage claims.
+    // Multiple concurrent rows per user are expected (multiple browsers/devices), not a bug.
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS sessions (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER NOT NULL REFERENCES users(id),
+          token TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL,
+          expires_at TEXT NOT NULL
       );
     `);
 
@@ -188,11 +201,110 @@ function ensureSchema(): Promise<void> {
     await db.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS service_charge DOUBLE PRECISION`);
     await db.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS discount DOUBLE PRECISION`);
     await db.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS extraction_confidence DOUBLE PRECISION`);
+
+    // Gmail connection (OAuth), one per app-user. Only the refresh token is persisted, and always
+    // encrypted (see backend/lib/credentialCrypto.ts); the short-lived access token is re-derived
+    // from it on demand and never stored. "Connected" is derived from gmail_refresh_token IS NOT
+    // NULL rather than a separate boolean column.
+    await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS gmail_email TEXT`);
+    await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS gmail_refresh_token TEXT`);
+    await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS gmail_connected_at TEXT`);
+
+    // Kept in Settings because the user wants the option available, but nothing in this app
+    // currently consumes it (the AI provider is Groq, and Gmail access is OAuth, not a pasted
+    // key) — encrypted at rest like the Gmail refresh token, for whenever a feature needs it.
+    await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS google_api_key TEXT`);
+
+    // Tracks which Gmail messages the background payment scanner has already looked at (matched
+    // or not), so the same email is never reclassified every tick — Gmail's own search syntax only
+    // supports day-granularity dates, so a plain "since last scan" timestamp isn't reliable enough.
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS gmail_processed_messages (
+          id SERIAL PRIMARY KEY,
+          user_id INTEGER NOT NULL REFERENCES users(id),
+          message_id TEXT NOT NULL,
+          processed_at TEXT NOT NULL,
+          UNIQUE (user_id, message_id)
+      );
+    `);
+
+    // --- Per-user data isolation --------------------------------------------------------------
+    // This app was single-user until now (see the removed getPrimaryUser doc comment) — every
+    // person/expense/debt/reminder row was global. Each of the four tables below gets its own
+    // owning-user column (denormalized onto expense_debts/reminders too, matching how reminders
+    // already stores both debt_id and the redundant person_id rather than requiring a join), added
+    // nullable, backfilled to today's one real user, then tightened to NOT NULL — safe to rerun
+    // every boot since the UPDATE is a no-op once nothing is NULL.
+    await db.query(`ALTER TABLE people ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)`);
+    await db.query(
+      `UPDATE people SET user_id = (SELECT id FROM users ORDER BY id ASC LIMIT 1) WHERE user_id IS NULL`
+    );
+    await db.query(`ALTER TABLE people ALTER COLUMN user_id SET NOT NULL`);
+
+    await db.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)`);
+    await db.query(
+      `UPDATE expenses SET user_id = (SELECT id FROM users ORDER BY id ASC LIMIT 1) WHERE user_id IS NULL`
+    );
+    await db.query(`ALTER TABLE expenses ALTER COLUMN user_id SET NOT NULL`);
+
+    await db.query(`ALTER TABLE expense_debts ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)`);
+    await db.query(
+      `UPDATE expense_debts SET user_id = (SELECT id FROM users ORDER BY id ASC LIMIT 1) WHERE user_id IS NULL`
+    );
+    await db.query(`ALTER TABLE expense_debts ALTER COLUMN user_id SET NOT NULL`);
+
+    await db.query(`ALTER TABLE reminders ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)`);
+    await db.query(
+      `UPDATE reminders SET user_id = (SELECT id FROM users ORDER BY id ASC LIMIT 1) WHERE user_id IS NULL`
+    );
+    await db.query(`ALTER TABLE reminders ALTER COLUMN user_id SET NOT NULL`);
+
+    // people.telegram_username was globally UNIQUE — that actively blocks multi-tenancy (two
+    // different app-users each adding a contact with the same handle would collide), so it's
+    // swapped for a per-user composite constraint. The old constraint's name is looked up from
+    // Postgres's own catalog (whatever single-column UNIQUE constraint actually exists on this
+    // column) rather than assumed to be Postgres's default auto-generated name — safe to rerun
+    // every boot: a no-op once the old constraint is already gone.
+    await db.query(`
+      DO $$
+      DECLARE
+        old_constraint_name text;
+      BEGIN
+        SELECT con.conname INTO old_constraint_name
+        FROM pg_constraint con
+        JOIN pg_class rel ON rel.oid = con.conrelid
+        WHERE rel.relname = 'people'
+          AND con.contype = 'u'
+          AND con.conkey = ARRAY[
+            (SELECT attnum FROM pg_attribute WHERE attrelid = rel.oid AND attname = 'telegram_username')
+          ];
+        IF old_constraint_name IS NOT NULL THEN
+          EXECUTE format('ALTER TABLE people DROP CONSTRAINT %I', old_constraint_name);
+        END IF;
+      END $$;
+    `);
+    await db.query(`
+      DO $$ BEGIN
+        ALTER TABLE people ADD CONSTRAINT people_user_telegram_username_key UNIQUE (user_id, telegram_username);
+      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+    `);
+
+    // verification_code had no uniqueness constraint at all — harmless odds (~1 in a billion) in a
+    // single-user app, but a real cross-tenant collision risk now that multiple app-users' contacts
+    // share one global code space (Telegram's incoming message can't know which tenant sent it in
+    // advance, so the lookup is deliberately global — see getPersonByVerificationCode — which is
+    // exactly why the code itself must be guaranteed unique).
+    await db.query(`
+      DO $$ BEGIN
+        ALTER TABLE people ADD CONSTRAINT people_verification_code_key UNIQUE (verification_code);
+      EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+    `);
   })();
   return schemaReady;
 }
 
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O/1/I/L — easy to type back
+const MAX_CODE_GENERATION_ATTEMPTS = 5;
 
 function generateVerificationCode(): string {
   let code = "";
@@ -200,13 +312,26 @@ function generateVerificationCode(): string {
   return code;
 }
 
-/** Gives any pre-existing person (created before verification codes existed) a code too. */
+function isUniqueViolation(error: unknown): boolean {
+  return (error as { code?: string } | null)?.code === "23505";
+}
+
+/** Gives any pre-existing person (created before verification codes existed) a code too. Retries a
+ * fresh code on the rare collision against the table's UNIQUE constraint (see ensureSchema) rather
+ * than crashing the whole backfill over one unlucky row. */
 async function backfillVerificationCodes(db: Pool): Promise<void> {
   const { rows: missing } = await db.query<{ id: number }>(
     `SELECT id FROM people WHERE verification_code IS NULL`
   );
   for (const { id } of missing) {
-    await db.query(`UPDATE people SET verification_code = $1 WHERE id = $2`, [generateVerificationCode(), id]);
+    for (let attempt = 1; attempt <= MAX_CODE_GENERATION_ATTEMPTS; attempt++) {
+      try {
+        await db.query(`UPDATE people SET verification_code = $1 WHERE id = $2`, [generateVerificationCode(), id]);
+        break;
+      } catch (error) {
+        if (!isUniqueViolation(error) || attempt === MAX_CODE_GENERATION_ATTEMPTS) throw error;
+      }
+    }
   }
 }
 
@@ -235,6 +360,7 @@ function normalizeUsername(raw: string): string {
 
 export interface Person {
   id: number;
+  user_id: number;
   name: string;
   telegram_username: string;
   relationship: string | null;
@@ -253,35 +379,53 @@ export interface PersonWithStats extends Person {
   open_debts: number;
 }
 
-export async function createPerson(input: {
-  name: string;
-  telegramUsername: string;
-  relationship?: string;
-  notes?: string;
-  phoneNumber?: string;
-  keepFormal?: boolean;
-}): Promise<Person> {
+export async function createPerson(
+  userId: number,
+  input: {
+    name: string;
+    telegramUsername: string;
+    relationship?: string;
+    notes?: string;
+    phoneNumber?: string;
+    keepFormal?: boolean;
+  }
+): Promise<Person> {
   const database = await getDb();
   const created_at = new Date().toISOString();
   const username = normalizeUsername(input.telegramUsername);
-  const { rows } = await database.query<{ id: number }>(
-    `INSERT INTO people (name, telegram_username, relationship, notes, phone_number, telegram_verified, verification_code, created_at, keep_formal)
-     VALUES ($1, $2, $3, $4, $5, 0, $6, $7, $8) RETURNING id`,
-    [
-      input.name,
-      username,
-      input.relationship ?? null,
-      input.notes ?? null,
-      input.phoneNumber ?? null,
-      generateVerificationCode(),
-      created_at,
-      input.keepFormal ? 1 : 0,
-    ]
-  );
-  return (await getPerson(rows[0].id))!;
+  for (let attempt = 1; attempt <= MAX_CODE_GENERATION_ATTEMPTS; attempt++) {
+    try {
+      const { rows } = await database.query<{ id: number }>(
+        `INSERT INTO people (user_id, name, telegram_username, relationship, notes, phone_number, telegram_verified, verification_code, created_at, keep_formal)
+         VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $8, $9) RETURNING id`,
+        [
+          userId,
+          input.name,
+          username,
+          input.relationship ?? null,
+          input.notes ?? null,
+          input.phoneNumber ?? null,
+          generateVerificationCode(),
+          created_at,
+          input.keepFormal ? 1 : 0,
+        ]
+      );
+      return (await getPerson(userId, rows[0].id))!;
+    } catch (error) {
+      // A collision on (user_id, telegram_username) is a real "you already added this contact"
+      // conflict the caller must see — only retry the rare verification_code collision.
+      const isTelegramUsernameConflict =
+        isUniqueViolation(error) && (error as { constraint?: string }).constraint?.includes("telegram_username");
+      if (!isUniqueViolation(error) || isTelegramUsernameConflict || attempt === MAX_CODE_GENERATION_ATTEMPTS) {
+        throw error;
+      }
+    }
+  }
+  throw new Error("Couldn't generate a unique verification code.");
 }
 
 export async function updatePerson(
+  userId: number,
   id: number,
   patch: Partial<{
     name: string;
@@ -292,7 +436,7 @@ export async function updatePerson(
   }>
 ): Promise<Person | undefined> {
   const database = await getDb();
-  const current = await getPerson(id);
+  const current = await getPerson(userId, id);
   if (!current) return undefined;
   const next = {
     name: patch.name ?? current.name,
@@ -302,10 +446,11 @@ export async function updatePerson(
     keep_formal: patch.keepFormal !== undefined ? (patch.keepFormal ? 1 : 0) : current.keep_formal,
   };
   await database.query(
-    `UPDATE people SET name = $1, relationship = $2, notes = $3, phone_number = $4, keep_formal = $5 WHERE id = $6`,
-    [next.name, next.relationship, next.notes, next.phone_number, next.keep_formal, id]
+    `UPDATE people SET name = $1, relationship = $2, notes = $3, phone_number = $4, keep_formal = $5
+     WHERE id = $6 AND user_id = $7`,
+    [next.name, next.relationship, next.notes, next.phone_number, next.keep_formal, id, userId]
   );
-  return getPerson(id);
+  return getPerson(userId, id);
 }
 
 /**
@@ -313,41 +458,48 @@ export async function updatePerson(
  * `expense_debts.person_id`/`reminders.person_id` mean Postgres itself refuses this delete while
  * any debt still references the person — the API checks for that first and returns a friendly
  * message rather than letting the constraint failure surface. Returns true if deleted, false if
- * the person didn't exist.
+ * the person didn't exist (or doesn't belong to this user).
  */
-export async function deletePerson(id: number): Promise<boolean> {
+export async function deletePerson(userId: number, id: number): Promise<boolean> {
   const database = await getDb();
-  const existing = await getPerson(id);
+  const existing = await getPerson(userId, id);
   if (!existing) return false;
-  await database.query(`DELETE FROM people WHERE id = $1`, [id]);
+  await database.query(`DELETE FROM people WHERE id = $1 AND user_id = $2`, [id, userId]);
   return true;
 }
 
-export async function getPersonByUsername(telegramUsername: string): Promise<Person | undefined> {
+export async function getPersonByUsername(userId: number, telegramUsername: string): Promise<Person | undefined> {
   const database = await getDb();
   const username = normalizeUsername(telegramUsername);
-  const { rows } = await database.query<Person>(`SELECT * FROM people WHERE telegram_username = $1`, [username]);
+  const { rows } = await database.query<Person>(
+    `SELECT * FROM people WHERE telegram_username = $1 AND user_id = $2`,
+    [username, userId]
+  );
   return rows[0];
 }
 
-export async function getPerson(id: number): Promise<Person | undefined> {
+export async function getPerson(userId: number, id: number): Promise<Person | undefined> {
   const database = await getDb();
-  const { rows } = await database.query<Person>(`SELECT * FROM people WHERE id = $1`, [id]);
+  const { rows } = await database.query<Person>(`SELECT * FROM people WHERE id = $1 AND user_id = $2`, [id, userId]);
   return rows[0];
 }
 
-/** Finds an existing person by Telegram username, or creates one. Used when tagging an expense. */
-export async function getOrCreatePerson(input: {
-  name: string;
-  telegramUsername: string;
-  relationship?: string;
-}): Promise<Person> {
-  const existing = await getPersonByUsername(input.telegramUsername);
+/** Finds an existing person (belonging to this user) by Telegram username, or creates one. Used
+ * when tagging an expense. */
+export async function getOrCreatePerson(
+  userId: number,
+  input: {
+    name: string;
+    telegramUsername: string;
+    relationship?: string;
+  }
+): Promise<Person> {
+  const existing = await getPersonByUsername(userId, input.telegramUsername);
   if (existing) return existing;
-  return createPerson(input);
+  return createPerson(userId, input);
 }
 
-export async function listPeopleWithStats(): Promise<PersonWithStats[]> {
+export async function listPeopleWithStats(userId: number): Promise<PersonWithStats[]> {
   const database = await getDb();
   const { rows } = await database.query<PersonWithStats>(
     `SELECT
@@ -356,16 +508,21 @@ export async function listPeopleWithStats(): Promise<PersonWithStats[]> {
        COALESCE(SUM(CASE WHEN d.status = 'UNPAID' THEN 1 ELSE 0 END), 0) AS open_debts
      FROM people p
      LEFT JOIN expense_debts d ON d.person_id = p.id
+     WHERE p.user_id = $1
      GROUP BY p.id
-     ORDER BY p.name COLLATE "C" ASC`
+     ORDER BY p.name COLLATE "C" ASC`,
+    [userId]
   );
   return rows;
 }
 
 /**
- * Marks a person's Telegram identity as verified because the poller just saw
- * a real incoming message from this exact username — the only honest proof
- * available via the Bot API (it can't look up an arbitrary username itself).
+ * Marks a person's Telegram identity as verified because the poller just saw a real incoming
+ * message from this exact username — the only honest proof available via the Bot API (it can't
+ * look up an arbitrary username itself). Deliberately global (not scoped by user_id): if two
+ * different app-users each have this same real person as a contact, an incoming message from them
+ * should verify *both* app-users' entries, since it's genuinely the same Telegram account reaching
+ * out — matching the same reasoning as the code-based verification path below.
  */
 export async function verifyPersonTelegram(
   telegramUsername: string,
@@ -389,6 +546,15 @@ export async function getPersonByVerificationCode(code: string): Promise<Person 
   return rows[0];
 }
 
+/** Global by-id lookup, deliberately not scoped by user — for the two Telegram-triggered paths
+ * above that only learn which tenant owns a person *after* finding them (by code or by username),
+ * not before. Every other caller in this codebase goes through the user-scoped `getPerson`. */
+async function getPersonByIdUnscoped(id: number): Promise<Person | undefined> {
+  const database = await getDb();
+  const { rows } = await database.query<Person>(`SELECT * FROM people WHERE id = $1`, [id]);
+  return rows[0];
+}
+
 /**
  * Verifies a person by the one-time code they sent the bot, rather than by
  * username — the only option for a Telegram account with no public
@@ -406,7 +572,7 @@ export async function verifyPersonByCode(
     `UPDATE people SET telegram_chat_id = $1, telegram_user_id = $2, telegram_verified = 1 WHERE id = $3`,
     [String(chatId), String(telegramUserId), person.id]
   );
-  return getPerson(person.id);
+  return getPersonByIdUnscoped(person.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -426,6 +592,7 @@ export interface ExpenseLineItem {
 
 export interface Expense {
   id: number;
+  user_id: number;
   source: ExpenseSource;
   merchant: string | null;
   expense_date: string | null;
@@ -448,37 +615,41 @@ export interface Expense {
   created_at: string;
 }
 
-export async function createExpense(input: {
-  source: ExpenseSource;
-  merchant: string | null;
-  expenseDate: string | null;
-  total: number;
-  currency: string | null;
-  subtotal?: number | null;
-  tax: number | null;
-  tip: number | null;
-  serviceCharge?: number | null;
-  discount?: number | null;
-  category: string | null;
-  paymentMethod: string | null;
-  transactionReference: string | null;
-  description: string | null;
-  lineItems: ExpenseLineItem[];
-  visibleNames: string[];
-  imagePath: string | null;
-  rawExtraction: unknown;
-  confidence?: number | null;
-}): Promise<Expense> {
+export async function createExpense(
+  userId: number,
+  input: {
+    source: ExpenseSource;
+    merchant: string | null;
+    expenseDate: string | null;
+    total: number;
+    currency: string | null;
+    subtotal?: number | null;
+    tax: number | null;
+    tip: number | null;
+    serviceCharge?: number | null;
+    discount?: number | null;
+    category: string | null;
+    paymentMethod: string | null;
+    transactionReference: string | null;
+    description: string | null;
+    lineItems: ExpenseLineItem[];
+    visibleNames: string[];
+    imagePath: string | null;
+    rawExtraction: unknown;
+    confidence?: number | null;
+  }
+): Promise<Expense> {
   const database = await getDb();
   const created_at = new Date().toISOString();
   const { rows } = await database.query<{ id: number }>(
     `INSERT INTO expenses
-       (source, merchant, expense_date, total, currency, subtotal, tax, tip, service_charge, discount,
+       (user_id, source, merchant, expense_date, total, currency, subtotal, tax, tip, service_charge, discount,
         category, payment_method, transaction_reference, description, line_items_json,
         visible_names_json, image_path, raw_extraction_json, extraction_confidence, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
      RETURNING id`,
     [
+      userId,
       input.source,
       input.merchant,
       input.expenseDate,
@@ -501,18 +672,24 @@ export async function createExpense(input: {
       created_at,
     ]
   );
-  return (await getExpense(rows[0].id))!;
+  return (await getExpense(userId, rows[0].id))!;
 }
 
-export async function getExpense(id: number): Promise<Expense | undefined> {
+export async function getExpense(userId: number, id: number): Promise<Expense | undefined> {
   const database = await getDb();
-  const { rows } = await database.query<Expense>(`SELECT * FROM expenses WHERE id = $1`, [id]);
+  const { rows } = await database.query<Expense>(`SELECT * FROM expenses WHERE id = $1 AND user_id = $2`, [
+    id,
+    userId,
+  ]);
   return rows[0];
 }
 
-export async function listExpenses(limit = 100): Promise<Expense[]> {
+export async function listExpenses(userId: number, limit = 100): Promise<Expense[]> {
   const database = await getDb();
-  const { rows } = await database.query<Expense>(`SELECT * FROM expenses ORDER BY created_at DESC LIMIT $1`, [limit]);
+  const { rows } = await database.query<Expense>(
+    `SELECT * FROM expenses WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+    [userId, limit]
+  );
   return rows;
 }
 
@@ -523,16 +700,20 @@ export async function listExpenses(limit = 100): Promise<Expense[]> {
  * rather than letting the constraint failure surface). Returns the deleted row's `image_path` (so
  * the caller can clean up the uploaded file) or undefined if the expense didn't exist.
  */
-export async function deleteExpense(id: number): Promise<{ imagePath: string | null } | undefined> {
+export async function deleteExpense(
+  userId: number,
+  id: number
+): Promise<{ imagePath: string | null } | undefined> {
   const database = await getDb();
-  const existing = await getExpense(id);
+  const existing = await getExpense(userId, id);
   if (!existing) return undefined;
-  await database.query(`DELETE FROM expenses WHERE id = $1`, [id]);
+  await database.query(`DELETE FROM expenses WHERE id = $1 AND user_id = $2`, [id, userId]);
   return { imagePath: existing.image_path };
 }
 
 /** Lets the user correct extracted (or manually-entered) fields before attaching a person/debt. */
 export async function updateExpense(
+  userId: number,
   id: number,
   patch: Partial<{
     merchant: string | null;
@@ -551,7 +732,7 @@ export async function updateExpense(
   }>
 ): Promise<Expense | undefined> {
   const database = await getDb();
-  const current = await getExpense(id);
+  const current = await getExpense(userId, id);
   if (!current) return undefined;
 
   const next = {
@@ -572,7 +753,8 @@ export async function updateExpense(
 
   await database.query(
     `UPDATE expenses SET merchant = $1, expense_date = $2, total = $3, currency = $4, subtotal = $5, tax = $6, tip = $7,
-       service_charge = $8, discount = $9, category = $10, payment_method = $11, description = $12, line_items_json = $13 WHERE id = $14`,
+       service_charge = $8, discount = $9, category = $10, payment_method = $11, description = $12, line_items_json = $13
+     WHERE id = $14 AND user_id = $15`,
     [
       next.merchant,
       next.expense_date,
@@ -588,10 +770,11 @@ export async function updateExpense(
       next.description,
       next.line_items_json,
       id,
+      userId,
     ]
   );
 
-  return getExpense(id);
+  return getExpense(userId, id);
 }
 
 // ---------------------------------------------------------------------------
@@ -606,6 +789,7 @@ export type ShareModeValue = "FULL" | "HALF" | "CUSTOM";
 
 export interface ExpenseDebt {
   id: number;
+  user_id: number;
   expense_id: number;
   person_id: number;
   amount: number;
@@ -623,25 +807,29 @@ export interface ExpenseDebt {
   paid_at: string | null;
 }
 
-export async function createExpenseDebt(input: {
-  expenseId: number;
-  personId: number;
-  amount: number;
-  currency: string | null;
-  shareMode: ShareModeValue;
-  additionalContext: string | null;
-  desiredAction: string | null;
-  contextJson: unknown;
-  selectedItems?: Array<{ name: string; amount: number }> | null;
-}): Promise<ExpenseDebt> {
+export async function createExpenseDebt(
+  userId: number,
+  input: {
+    expenseId: number;
+    personId: number;
+    amount: number;
+    currency: string | null;
+    shareMode: ShareModeValue;
+    additionalContext: string | null;
+    desiredAction: string | null;
+    contextJson: unknown;
+    selectedItems?: Array<{ name: string; amount: number }> | null;
+  }
+): Promise<ExpenseDebt> {
   const database = await getDb();
   const created_at = new Date().toISOString();
   const { rows } = await database.query<{ id: number }>(
     `INSERT INTO expense_debts
-       (expense_id, person_id, amount, currency, status, context_json, share_mode, additional_context, desired_action, selected_items_json, created_at)
-     VALUES ($1, $2, $3, $4, 'UNPAID', $5, $6, $7, $8, $9, $10)
+       (user_id, expense_id, person_id, amount, currency, status, context_json, share_mode, additional_context, desired_action, selected_items_json, created_at)
+     VALUES ($1, $2, $3, $4, $5, 'UNPAID', $6, $7, $8, $9, $10, $11)
      RETURNING id`,
     [
+      userId,
       input.expenseId,
       input.personId,
       input.amount,
@@ -654,83 +842,99 @@ export async function createExpenseDebt(input: {
       created_at,
     ]
   );
-  return (await getExpenseDebt(rows[0].id))!;
+  return (await getExpenseDebt(userId, rows[0].id))!;
 }
 
-export async function getExpenseDebt(id: number): Promise<ExpenseDebt | undefined> {
+export async function getExpenseDebt(userId: number, id: number): Promise<ExpenseDebt | undefined> {
   const database = await getDb();
-  const { rows } = await database.query<ExpenseDebt>(`SELECT * FROM expense_debts WHERE id = $1`, [id]);
+  const { rows } = await database.query<ExpenseDebt>(
+    `SELECT * FROM expense_debts WHERE id = $1 AND user_id = $2`,
+    [id, userId]
+  );
   return rows[0];
 }
 
-export async function getDebtsForExpense(expenseId: number): Promise<ExpenseDebt[]> {
+export async function getDebtsForExpense(userId: number, expenseId: number): Promise<ExpenseDebt[]> {
   const database = await getDb();
   const { rows } = await database.query<ExpenseDebt>(
-    `SELECT * FROM expense_debts WHERE expense_id = $1 ORDER BY created_at ASC`,
-    [expenseId]
+    `SELECT * FROM expense_debts WHERE expense_id = $1 AND user_id = $2 ORDER BY created_at ASC`,
+    [expenseId, userId]
   );
   return rows;
 }
 
-export async function getDebtsForPerson(personId: number): Promise<ExpenseDebt[]> {
+export async function getDebtsForPerson(userId: number, personId: number): Promise<ExpenseDebt[]> {
   const database = await getDb();
   const { rows } = await database.query<ExpenseDebt>(
-    `SELECT * FROM expense_debts WHERE person_id = $1 ORDER BY created_at DESC`,
-    [personId]
+    `SELECT * FROM expense_debts WHERE person_id = $1 AND user_id = $2 ORDER BY created_at DESC`,
+    [personId, userId]
   );
   return rows;
 }
 
-export async function listRecentDebts(limit = 100): Promise<ExpenseDebt[]> {
+export async function listRecentDebts(userId: number, limit = 100): Promise<ExpenseDebt[]> {
   const database = await getDb();
-  const { rows } = await database.query<ExpenseDebt>(`SELECT * FROM expense_debts ORDER BY created_at DESC LIMIT $1`, [
-    limit,
+  const { rows } = await database.query<ExpenseDebt>(
+    `SELECT * FROM expense_debts WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+    [userId, limit]
+  );
+  return rows;
+}
+
+export async function updateDebtContext(
+  userId: number,
+  id: number,
+  context: unknown
+): Promise<ExpenseDebt | undefined> {
+  const database = await getDb();
+  await database.query(`UPDATE expense_debts SET context_json = $1 WHERE id = $2 AND user_id = $3`, [
+    JSON.stringify(context),
+    id,
+    userId,
   ]);
-  return rows;
-}
-
-export async function updateDebtContext(id: number, context: unknown): Promise<ExpenseDebt | undefined> {
-  const database = await getDb();
-  await database.query(`UPDATE expense_debts SET context_json = $1 WHERE id = $2`, [JSON.stringify(context), id]);
-  return getExpenseDebt(id);
+  return getExpenseDebt(userId, id);
 }
 
 export async function updateDebtDraftMessage(
+  userId: number,
   id: number,
   patch: { message: string; tone: string | null; edited: boolean }
 ): Promise<ExpenseDebt | undefined> {
   const database = await getDb();
-  await database.query(`UPDATE expense_debts SET message = $1, tone = $2, message_edited = $3 WHERE id = $4`, [
-    patch.message,
-    patch.tone,
-    patch.edited ? 1 : 0,
-    id,
-  ]);
-  return getExpenseDebt(id);
+  await database.query(
+    `UPDATE expense_debts SET message = $1, tone = $2, message_edited = $3 WHERE id = $4 AND user_id = $5`,
+    [patch.message, patch.tone, patch.edited ? 1 : 0, id, userId]
+  );
+  return getExpenseDebt(userId, id);
 }
 
-export async function setDebtStatus(id: number, status: DebtStatus): Promise<ExpenseDebt | undefined> {
+export async function setDebtStatus(
+  userId: number,
+  id: number,
+  status: DebtStatus
+): Promise<ExpenseDebt | undefined> {
   const database = await getDb();
-  await database.query(`UPDATE expense_debts SET status = $1, paid_at = $2 WHERE id = $3`, [
+  await database.query(`UPDATE expense_debts SET status = $1, paid_at = $2 WHERE id = $3 AND user_id = $4`, [
     status,
     status === "PAID" ? new Date().toISOString() : null,
     id,
+    userId,
   ]);
-  return getExpenseDebt(id);
+  return getExpenseDebt(userId, id);
 }
 
 /**
  * Deletes one debt ("send request") and only that debt — its own send-history rows in
  * `reminders`, and the `expense_debts` row itself. Never touches `people` or `expenses`; the
  * person and the underlying expense this debt was drafted against are always left exactly as
- * they were. Returns false if the debt didn't exist (nothing to delete), true otherwise.
+ * they were. Returns false if the debt didn't exist (or doesn't belong to this user), true otherwise.
  */
-export async function deleteExpenseDebt(id: number): Promise<boolean> {
+export async function deleteExpenseDebt(userId: number, id: number): Promise<boolean> {
   const database = await getDb();
-  const existing = await getExpenseDebt(id);
+  const existing = await getExpenseDebt(userId, id);
   if (!existing) return false;
-  await database.query(`DELETE FROM reminders WHERE debt_id = $1`, [id]);
-  await database.query(`DELETE FROM expense_debts WHERE id = $1`, [id]);
+  await database.query(`DELETE FROM reminders WHERE debt_id = $1 AND user_id = $2`, [id, userId]);
+  await database.query(`DELETE FROM expense_debts WHERE id = $1 AND user_id = $2`, [id, userId]);
   return true;
 }
 
@@ -740,18 +944,24 @@ export interface DashboardStats {
   remindersSent: number;
 }
 
-export async function getDashboardStats(): Promise<DashboardStats> {
+export async function getDashboardStats(userId: number): Promise<DashboardStats> {
   const database = await getDb();
   const totalOwed = (
-    await database.query<{ v: number }>(`SELECT COALESCE(SUM(amount), 0) AS v FROM expense_debts WHERE status = 'UNPAID'`)
+    await database.query<{ v: number }>(
+      `SELECT COALESCE(SUM(amount), 0) AS v FROM expense_debts WHERE status = 'UNPAID' AND user_id = $1`,
+      [userId]
+    )
   ).rows[0].v;
   const peopleOwing = (
     await database.query<{ v: number }>(
-      `SELECT COUNT(DISTINCT person_id) AS v FROM expense_debts WHERE status = 'UNPAID'`
+      `SELECT COUNT(DISTINCT person_id) AS v FROM expense_debts WHERE status = 'UNPAID' AND user_id = $1`,
+      [userId]
     )
   ).rows[0].v;
   const remindersSent = (
-    await database.query<{ v: number }>(`SELECT COUNT(*) AS v FROM reminders WHERE status = 'SENT'`)
+    await database.query<{ v: number }>(`SELECT COUNT(*) AS v FROM reminders WHERE status = 'SENT' AND user_id = $1`, [
+      userId,
+    ])
   ).rows[0].v;
   return { totalOwed: Number(totalOwed), peopleOwing: Number(peopleOwing), remindersSent: Number(remindersSent) };
 }
@@ -766,6 +976,7 @@ export type ReminderStatus = "SENT" | "FAILED";
 
 export interface Reminder {
   id: number;
+  user_id: number;
   debt_id: number;
   person_id: number;
   message: string;
@@ -776,20 +987,24 @@ export interface Reminder {
   telegram_message_id: string | null;
 }
 
-export async function recordReminder(input: {
-  debtId: number;
-  personId: number;
-  message: string;
-  tone: string | null;
-  status: ReminderStatus;
-  telegramMessageId?: string | number | null;
-}): Promise<Reminder> {
+export async function recordReminder(
+  userId: number,
+  input: {
+    debtId: number;
+    personId: number;
+    message: string;
+    tone: string | null;
+    status: ReminderStatus;
+    telegramMessageId?: string | number | null;
+  }
+): Promise<Reminder> {
   const database = await getDb();
   const created_at = new Date().toISOString();
   const { rows } = await database.query<Reminder>(
-    `INSERT INTO reminders (debt_id, person_id, message, tone, status, created_at, sent_at, telegram_message_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    `INSERT INTO reminders (user_id, debt_id, person_id, message, tone, status, created_at, sent_at, telegram_message_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
     [
+      userId,
       input.debtId,
       input.personId,
       input.message,
@@ -803,19 +1018,21 @@ export async function recordReminder(input: {
   return rows[0];
 }
 
-export async function listReminders(limit = 100): Promise<Reminder[]> {
+export async function listReminders(userId: number, limit = 100): Promise<Reminder[]> {
   const database = await getDb();
-  const { rows } = await database.query<Reminder>(`SELECT * FROM reminders ORDER BY created_at DESC LIMIT $1`, [
-    limit,
-  ]);
+  const { rows } = await database.query<Reminder>(
+    `SELECT * FROM reminders WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+    [userId, limit]
+  );
   return rows;
 }
 
-export async function getRemindersForDebt(debtId: number): Promise<Reminder[]> {
+export async function getRemindersForDebt(userId: number, debtId: number): Promise<Reminder[]> {
   const database = await getDb();
-  const { rows } = await database.query<Reminder>(`SELECT * FROM reminders WHERE debt_id = $1 ORDER BY created_at DESC`, [
-    debtId,
-  ]);
+  const { rows } = await database.query<Reminder>(
+    `SELECT * FROM reminders WHERE debt_id = $1 AND user_id = $2 ORDER BY created_at DESC`,
+    [debtId, userId]
+  );
   return rows;
 }
 
@@ -843,11 +1060,11 @@ export async function getDebtsDueForAutomaticFollowUp(cutoffIso: string): Promis
   return rows;
 }
 
-export async function getRemindersForPerson(personId: number): Promise<Reminder[]> {
+export async function getRemindersForPerson(userId: number, personId: number): Promise<Reminder[]> {
   const database = await getDb();
   const { rows } = await database.query<Reminder>(
-    `SELECT * FROM reminders WHERE person_id = $1 ORDER BY created_at DESC`,
-    [personId]
+    `SELECT * FROM reminders WHERE person_id = $1 AND user_id = $2 ORDER BY created_at DESC`,
+    [personId, userId]
   );
   return rows;
 }
@@ -889,8 +1106,15 @@ export interface UserRecord {
   telegram_username: string;
   created_at: string;
   last_login_at: string;
+  gmail_email: string | null;
+  gmail_refresh_token: string | null;
+  gmail_connected_at: string | null;
+  google_api_key: string | null;
 }
 
+/** Logging in with a Telegram username that doesn't exist yet creates an account — this app has no
+ * password/signup flow, by design (see backend/api/routes/auth.ts); every app-user is a real,
+ * separate tenant from here on, not "the" one user. */
 export async function upsertUser(telegramUsername: string): Promise<UserRecord> {
   const database = await getDb();
   const username = normalizeUsername(telegramUsername);
@@ -905,14 +1129,128 @@ export async function upsertUser(telegramUsername: string): Promise<UserRecord> 
   return rows[0];
 }
 
-/**
- * This is a single-user local-dev app (see routes/auth.ts) — there is exactly one real row in
- * `users` in normal use. Used to name the actual app owner (by their own Telegram username, the
- * only identity this table stores) in the bot's reply to someone who just verified themselves,
- * instead of hardcoding a name. Returns undefined if no one has logged in yet.
- */
-export async function getPrimaryUser(): Promise<UserRecord | undefined> {
+export async function getUserById(id: number): Promise<UserRecord | undefined> {
   const database = await getDb();
-  const { rows } = await database.query<UserRecord>(`SELECT * FROM users ORDER BY id ASC LIMIT 1`);
+  const { rows } = await database.query<UserRecord>(`SELECT * FROM users WHERE id = $1`, [id]);
   return rows[0];
+}
+
+/** Names the app-user who actually owns this specific `person` row, for the bot's "you're now
+ * connected to @X's expense tracker" reply — replaces the old getPrimaryUser() (which just grabbed
+ * the first-ever registered user, back when there was only ever one). */
+export async function getOwnerOfPerson(personId: number): Promise<UserRecord | undefined> {
+  const database = await getDb();
+  const { rows } = await database.query<UserRecord>(
+    `SELECT u.* FROM users u JOIN people p ON p.user_id = u.id WHERE p.id = $1`,
+    [personId]
+  );
+  return rows[0];
+}
+
+/** Stores (or overwrites) a user's Gmail connection. `encryptedRefreshToken` must already be
+ * encrypted (see backend/lib/credentialCrypto.ts) — this function never sees a plaintext token. */
+export async function saveGmailConnection(
+  userId: number,
+  input: { email: string; encryptedRefreshToken: string }
+): Promise<void> {
+  const database = await getDb();
+  await database.query(
+    `UPDATE users SET gmail_email = $1, gmail_refresh_token = $2, gmail_connected_at = $3 WHERE id = $4`,
+    [input.email, input.encryptedRefreshToken, new Date().toISOString(), userId]
+  );
+}
+
+export async function clearGmailConnection(userId: number): Promise<void> {
+  const database = await getDb();
+  await database.query(
+    `UPDATE users SET gmail_email = NULL, gmail_refresh_token = NULL, gmail_connected_at = NULL WHERE id = $1`,
+    [userId]
+  );
+}
+
+/** Every app-user with a live Gmail connection — polled by the background payment scanner. */
+export async function listUsersWithGmailConnected(): Promise<UserRecord[]> {
+  const database = await getDb();
+  const { rows } = await database.query<UserRecord>(`SELECT * FROM users WHERE gmail_refresh_token IS NOT NULL`);
+  return rows;
+}
+
+/** Optional, per-user, encrypted at rest — kept available in Settings but not currently required
+ * or consumed by anything (see the schema comment in ensureSchema). `encryptedKey` must already be
+ * encrypted; pass null to clear it. */
+export async function saveGoogleApiKey(userId: number, encryptedKey: string | null): Promise<void> {
+  const database = await getDb();
+  await database.query(`UPDATE users SET google_api_key = $1 WHERE id = $2`, [encryptedKey, userId]);
+}
+
+// ---------------------------------------------------------------------------
+// Gmail background payment detection (backend/gmail/paymentScanner.ts)
+// ---------------------------------------------------------------------------
+
+export async function hasProcessedGmailMessage(userId: number, messageId: string): Promise<boolean> {
+  const database = await getDb();
+  const { rows } = await database.query(
+    `SELECT 1 FROM gmail_processed_messages WHERE user_id = $1 AND message_id = $2`,
+    [userId, messageId]
+  );
+  return rows.length > 0;
+}
+
+export async function markGmailMessageProcessed(userId: number, messageId: string): Promise<void> {
+  const database = await getDb();
+  await database.query(
+    `INSERT INTO gmail_processed_messages (user_id, message_id, processed_at) VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, message_id) DO NOTHING`,
+    [userId, messageId, new Date().toISOString()]
+  );
+}
+
+/** Candidate debts for the payment scanner to match a detected amount against — deliberately an
+ * exact-amount match only, scoped to this user's own unpaid debts. Returns every match rather than
+ * picking one: the caller only auto-acts when there's exactly one (a wrong auto-mark-paid is worse
+ * than a missed one), leaving zero-or-multiple-match cases for the user to reconcile manually. */
+// Within half a paisa — `amount` is DOUBLE PRECISION, so a debt amount computed from a split
+// (rather than typed in directly) can carry harmless floating-point rounding drift; a real
+// payment email's stated amount should never differ from the actual debt by more than this.
+const AMOUNT_MATCH_TOLERANCE = 0.005;
+
+export async function findUnpaidDebtsByAmount(userId: number, amount: number): Promise<ExpenseDebt[]> {
+  const database = await getDb();
+  const { rows } = await database.query<ExpenseDebt>(
+    `SELECT * FROM expense_debts WHERE user_id = $1 AND status = 'UNPAID' AND ABS(amount - $2) < $3`,
+    [userId, amount, AMOUNT_MATCH_TOLERANCE]
+  );
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Sessions (real per-request identity — see backend/api/middleware/requireAuth.ts)
+// ---------------------------------------------------------------------------
+
+const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+export async function createSession(userId: number): Promise<string> {
+  const database = await getDb();
+  const token = randomUUID();
+  const now = new Date();
+  await database.query(
+    `INSERT INTO sessions (user_id, token, created_at, expires_at) VALUES ($1, $2, $3, $4)`,
+    [userId, token, now.toISOString(), new Date(now.getTime() + SESSION_DURATION_MS).toISOString()]
+  );
+  return token;
+}
+
+export async function getSessionUser(token: string): Promise<UserRecord | undefined> {
+  const database = await getDb();
+  const { rows } = await database.query<UserRecord>(
+    `SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id
+     WHERE s.token = $1 AND s.expires_at > $2`,
+    [token, new Date().toISOString()]
+  );
+  return rows[0];
+}
+
+export async function deleteSession(token: string): Promise<void> {
+  const database = await getDb();
+  await database.query(`DELETE FROM sessions WHERE token = $1`, [token]);
 }
