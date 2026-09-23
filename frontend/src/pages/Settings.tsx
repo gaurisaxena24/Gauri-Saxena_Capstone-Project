@@ -179,6 +179,11 @@ export function Settings() {
 
         <div className="rounded-2xl border border-border bg-card p-5">
           <h2 className="text-sm font-semibold text-ink">Gmail</h2>
+          <p className="mt-1 text-sm text-ink-faint">
+            Connect your Gmail and the app checks it every few minutes for payment emails (like a UPI "money
+            received" message). If one matches something someone owes you, that debt is automatically marked
+            Paid and stops getting reminders — you don't have to do anything yourself.
+          </p>
 
           {gmailBanner && <p className="mt-1 text-sm text-[var(--color-success)]">{gmailBanner}</p>}
           {gmailError && (
@@ -236,11 +241,6 @@ export function Settings() {
           <h2 className="text-sm font-semibold text-ink">Google API Key (Optional)</h2>
           <p className="mt-1 text-sm text-ink-faint">
             Not required for Gmail or anything else in the app right now — available if you want to add your own.
-          </p>
-          <p className="mt-2 text-xs text-ink-faint">
-            <span className="font-medium text-ink-soft">How this works:</span> nothing in the app uses this key
-            yet. Once a feature does, it will read this exact saved key for your account only — encrypted, never
-            shown again after saving, never a shared key, and never used for anyone else's account.
           </p>
           <a
             href="https://console.cloud.google.com/apis/credentials"
