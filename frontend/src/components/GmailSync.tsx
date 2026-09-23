@@ -17,8 +17,9 @@ import { formatDateTime } from "../lib/format";
  * debt, and a result here only ever updates this one debt's own row via `onSynced`/`onMarkedPaid` —
  * never a whole-list refetch.
  *
- * Sync never auto-marks a debt paid — "Mark as Paid" below always goes through the existing
- * POST /debts/:id/paid endpoint (agent/debtCollectorAgent.ts's markDebtPaid), reused verbatim.
+ * When Sync finds a payment email matching on all three signals (person/name + date + exact
+ * amount), the backend marks the debt paid in that same request and this row flips to Paid
+ * immediately via `onMarkedPaid`. No match → the debt stays unpaid.
  */
 export function GmailSyncControl({
   debtId,
@@ -33,7 +34,8 @@ export function GmailSyncControl({
   /** Called only when a sync actually completed with a real answer (PAYMENT_FOUND /
    * POSSIBLE_PAYMENT / NO_PAYMENT_FOUND) — updates just this debt's stored sync summary. */
   onSynced: (summary: GmailSyncSummary) => void;
-  /** Called after "Mark as Paid" succeeds — lets the caller update this one debt's status/paidAt. */
+  /** Called when the debt becomes paid — either Sync matched a payment email, or "Mark as Paid" on
+   * an older POSSIBLE_PAYMENT result succeeded. Lets the caller update this one debt's status/paidAt. */
   onMarkedPaid: (paidAt: string | null) => void;
 }) {
   const [syncing, setSyncing] = useState(false);
@@ -63,6 +65,10 @@ export function GmailSyncControl({
           subject: result.subject ?? null,
           reason: result.reason ?? null,
         });
+      }
+      if (result.debtStatus === "PAID") {
+        // Matched on name + date + exact amount — the backend already marked it paid; flip the row now.
+        onMarkedPaid(result.paidAt ?? new Date().toISOString());
       }
     } catch (err) {
       // Network/auth failures at the fetch layer itself (not the backend's own SYNC_ERROR status,
@@ -173,7 +179,9 @@ function GmailSyncResultPanel({
 
   if (result.status === "NO_PAYMENT_FOUND") {
     return (
-      <p className="mt-2 text-xs text-ink-faint">We couldn't find an email confirming this payment.</p>
+      <p className="mt-2 text-xs text-ink-faint">
+        No payment email matched this person, date and exact amount — still unpaid.
+      </p>
     );
   }
 

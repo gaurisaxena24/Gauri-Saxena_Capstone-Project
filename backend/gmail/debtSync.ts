@@ -1,44 +1,53 @@
 /**
  * User-initiated, single-debt-scoped Gmail check (the "Sync" button — see
  * backend/api/routes/debts.ts's POST /:debtId/sync). Given one already-refreshed access token and
- * one specific debt+person, searches a bounded window of the user's own Gmail for messages that
- * could be evidence THIS debt was paid, and asks the AI to judge each one against that specific
- * target (see backend/ai/debtSyncReader.ts). Returns a single best result; never changes the debt's
- * status itself — see agent/debtCollectorAgent.ts's markDebtPaid for the only place that happens.
+ * one specific debt+person, searches a bounded window of the user's own Gmail for a payment email
+ * that matches THIS debt on all three signals:
  *
- * Deliberately separate from backend/gmail/paymentScanner.ts, the *background* scanner: that file
- * decides *when* to auto-mark a debt paid across ALL of a user's unpaid debts on a timer. This file
- * only ever looks at one debt, only when a user explicitly clicks Sync, and never auto-marks
- * anything paid. The low-level Gmail list/fetch primitives below intentionally mirror
- * paymentScanner.ts's (same Gmail REST endpoints, same base64url/HTML-stripped body extraction)
- * rather than importing from it — kept deliberately separate so this new, user-initiated feature can
- * never change the existing background scanner's behavior by editing a function it also depends on.
+ *   1. person/name — the payer in the email is this debt's person (AI judgment, allows "Raj K."),
+ *   2. date        — the email arrived within the window around the expense date (checked in code
+ *                    against Gmail's own internalDate, not just the search query),
+ *   3. exact amount — the amount received equals the debt amount (checked in code, not by the AI).
+ *
+ * Only a candidate passing all three is returned as PAYMENT_FOUND — the /sync route then marks the
+ * debt paid immediately via agent/debtCollectorAgent.ts's markDebtPaid. Anything less is
+ * NO_PAYMENT_FOUND and the debt stays unpaid. Stops at the first full match, so the status changes
+ * as soon as a matching email is found rather than after reading every candidate.
+ *
+ * Deliberately separate from backend/gmail/paymentScanner.ts, the *background* scanner. The
+ * low-level Gmail list/fetch primitives below intentionally mirror paymentScanner.ts's (same Gmail
+ * REST endpoints, same base64url/HTML-stripped body extraction) rather than importing from it —
+ * kept deliberately separate so this user-initiated feature can never change the background
+ * scanner's behavior by editing a function it also depends on.
  */
 
-import { classifyDebtSyncCandidate } from "../ai/debtSyncReader.js";
-import type { DebtGmailSyncStatus, ExpenseDebt, Person } from "../database/database.js";
+import { extractDebtSyncCandidate } from "../ai/debtSyncReader.js";
+import {
+  isGmailEmailMatchedToOtherDebt,
+  type DebtGmailSyncStatus,
+  type ExpenseDebt,
+  type Person,
+} from "../database/database.js";
 
 /** Bounded and cheap — this is a targeted single-debt check, not a broad scan. */
 const MAX_CANDIDATE_MESSAGES = 12;
 
 /**
- * How far around the expense's own date to search. Payments are rarely instant (someone might pay
- * days later), but an unbounded date range would both pull in a lot of unrelated mail and cost an AI
- * call per candidate for no benefit — 7 days each side is generous enough to catch a delayed payment
- * while keeping the candidate list small. Chosen as a reasonable default, not derived from any
- * measured data; the search still uses payment-language keywords too, not date alone.
+ * The date signal: a matching payment email must arrive no earlier than 1 day before the expense
+ * date (slack for timezones / an expense entered with the wrong day) and no later than 7 days after
+ * it (someone paying back a few days later). Chosen as a reasonable default, not derived from any
+ * measured data.
  */
-const DATE_WINDOW_DAYS = 7;
+const DATE_WINDOW_DAYS_BEFORE = 1;
+const DATE_WINDOW_DAYS_AFTER = 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Amounts are compared exactly — this only absorbs floating-point noise (850 vs 850.0000001),
+ * never a real difference like ₹850 vs ₹851. */
+const AMOUNT_EPSILON = 0.005;
 
 const PAYMENT_LANGUAGE_QUERY =
-  '(paid OR payment OR transferred OR sent OR settled OR cleared OR transaction OR UPI OR "bank transfer" OR "payment successful")';
-
-/** A classification is only ever surfaced as a strong PAYMENT_FOUND at this confidence or above;
- * below it (but still relevant) it's reported as POSSIBLE_PAYMENT instead. Below MIN_CONFIDENCE it's
- * treated as no usable signal from that candidate at all. Deliberately conservative — a wrong
- * PAYMENT_FOUND is worse than showing POSSIBLE_PAYMENT and letting the user decide. */
-const FOUND_CONFIDENCE_THRESHOLD = 0.75;
-const MIN_CONFIDENCE = 0.35;
+  '(paid OR payment OR received OR credited OR transferred OR sent OR settled OR transaction OR UPI OR "bank transfer" OR "payment successful")';
 
 interface GmailMessageListItem {
   id: string;
@@ -52,6 +61,8 @@ interface GmailMessagePart {
 
 interface GmailMessage {
   id: string;
+  /** Epoch milliseconds (as a string) when Gmail received the message — used for the date signal. */
+  internalDate?: string;
   payload?: {
     headers?: Array<{ name: string; value: string }>;
     body?: { data?: string };
@@ -98,6 +109,7 @@ interface FetchedMessage {
   bodyText: string;
   from: string;
   date: string;
+  receivedAtMs: number | null;
 }
 
 async function fetchMessage(accessToken: string, messageId: string): Promise<FetchedMessage> {
@@ -112,29 +124,44 @@ async function fetchMessage(accessToken: string, messageId: string): Promise<Fet
   const bodyText =
     (message.payload?.body?.data ? decodeBase64Url(message.payload.body.data) : "") ||
     extractBodyText(message.payload as GmailMessagePart | undefined);
+  const internalDate = Number(message.internalDate);
   return {
     id: message.id,
     subject: header("subject"),
     from: header("from"),
     date: header("date"),
+    receivedAtMs: Number.isFinite(internalDate) && internalDate > 0 ? internalDate : null,
     bodyText: bodyText.slice(0, 4000), // bounded — classification doesn't need a whole email chain
   };
 }
 
-/** Gmail's search syntax only supports day-granularity `after:`/`before:` (both in the form
- * YYYY/MM/DD, `before:` exclusive of that day) — this is the closest a Gmail query can get to "the
- * expense date, plus a window either side". Returns "" (no date filter) if the expense has no usable
- * date, rather than silently searching nothing. */
-function buildDateWindowQuery(expenseDateIso: string | null): string {
-  if (!expenseDateIso) return "";
-  const date = new Date(expenseDateIso);
-  if (Number.isNaN(date.getTime())) return "";
-  const after = new Date(date);
-  after.setDate(after.getDate() - DATE_WINDOW_DAYS);
-  const before = new Date(date);
-  before.setDate(before.getDate() + DATE_WINDOW_DAYS + 1);
-  const fmt = (d: Date) => `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
-  return `after:${fmt(after)} before:${fmt(before)}`;
+interface DateWindow {
+  startMs: number;
+  endMs: number;
+}
+
+/** The window a matching email must fall inside, anchored on the expense date (or, when the expense
+ * has no usable date, the day the debt was created). Null only if neither parses. */
+function buildDateWindow(anchorIso: string): DateWindow | null {
+  const anchor = new Date(anchorIso);
+  if (Number.isNaN(anchor.getTime())) return null;
+  // Anchored on the start of that day so a date-only "2026-09-20" and a full timestamp behave alike.
+  const dayStart = Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), anchor.getUTCDate());
+  return {
+    startMs: dayStart - DATE_WINDOW_DAYS_BEFORE * DAY_MS,
+    endMs: dayStart + (DATE_WINDOW_DAYS_AFTER + 1) * DAY_MS,
+  };
+}
+
+/** Gmail's search syntax only supports day-granularity `after:`/`before:` (YYYY/MM/DD, `before:`
+ * exclusive) — padded by a day each side so the search never drops an email the exact
+ * receivedAtMs check below would accept. */
+function buildDateWindowQuery(window: DateWindow): string {
+  const fmt = (ms: number) => {
+    const d = new Date(ms);
+    return `${d.getUTCFullYear()}/${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
+  };
+  return `after:${fmt(window.startMs - DAY_MS)} before:${fmt(window.endMs + DAY_MS)}`;
 }
 
 export interface DebtSyncResult {
@@ -147,8 +174,8 @@ export interface DebtSyncResult {
   subject: string | null;
 }
 
-function noMatchResult(): DebtSyncResult {
-  return { status: "NO_PAYMENT_FOUND", confidence: null, reason: null, emailId: null, emailDate: null, sender: null, subject: null };
+function noMatchResult(reason: string | null = null): DebtSyncResult {
+  return { status: "NO_PAYMENT_FOUND", confidence: null, reason, emailId: null, emailDate: null, sender: null, subject: null };
 }
 
 /**
@@ -161,54 +188,60 @@ function noMatchResult(): DebtSyncResult {
  */
 export async function syncDebtAgainstGmail(params: {
   accessToken: string;
+  userId: number;
   debt: ExpenseDebt;
   person: Person;
   expenseDate: string | null;
 }): Promise<DebtSyncResult> {
-  const { accessToken, debt, person, expenseDate } = params;
-  const query = [buildDateWindowQuery(expenseDate), PAYMENT_LANGUAGE_QUERY].filter(Boolean).join(" ");
+  const { accessToken, userId, debt, person, expenseDate } = params;
+  const window = buildDateWindow(expenseDate ?? debt.created_at);
+  if (!window) return noMatchResult("This expense has no usable date to match a payment email against.");
 
+  const query = `${buildDateWindowQuery(window)} ${PAYMENT_LANGUAGE_QUERY}`;
   const candidates = await listCandidateMessages(accessToken, query);
-
-  let best: { confidence: number; reason: string; message: FetchedMessage } | null = null;
 
   for (const { id: messageId } of candidates) {
     try {
       const message = await fetchMessage(accessToken, messageId);
-      const classification = await classifyDebtSyncCandidate({
+
+      // Signal 2 (date) — checked first since it's free, before spending an AI call on this email.
+      if (message.receivedAtMs == null || message.receivedAtMs < window.startMs || message.receivedAtMs >= window.endMs) {
+        continue;
+      }
+
+      const extraction = await extractDebtSyncCandidate({
         personName: person.name,
         personUsername: person.telegram_username,
         personPhone: person.phone_number,
-        amount: debt.amount,
-        currency: debt.currency,
-        expenseDate,
         emailSubject: message.subject,
         emailBody: message.bodyText,
       });
+      if (extraction.extractionFailed || !extraction.isIncomingPayment) continue;
 
-      if (classification.extractionFailed) continue;
-      if (classification.status === "NO_PAYMENT_FOUND") continue;
-      if (classification.confidence < MIN_CONFIDENCE) continue;
+      // Signal 3 (exact amount) — compared here, never left to the model.
+      if (extraction.amount == null || Math.abs(extraction.amount - debt.amount) > AMOUNT_EPSILON) continue;
 
-      if (!best || classification.confidence > best.confidence) {
-        best = { confidence: classification.confidence, reason: classification.reason, message };
-      }
+      // Signal 1 (person/name).
+      if (!extraction.payer || !extraction.payerMatchesPerson) continue;
+
+      // One payment email only ever settles one debt — if it already marked a different debt paid
+      // (e.g. the same person owes the same amount twice that week), keep looking for another email.
+      if (await isGmailEmailMatchedToOtherDebt(userId, message.id, debt.id)) continue;
+
+      return {
+        status: "PAYMENT_FOUND",
+        confidence: 1,
+        reason: extraction.reason || `Payment of ${debt.amount} from ${extraction.payer} matches name, date and amount.`,
+        emailId: message.id,
+        emailDate: message.date || null,
+        sender: message.from || null,
+        subject: message.subject || null,
+      };
     } catch (error) {
       console.error(`[debt-sync] Failed to fetch/classify Gmail message ${messageId} for debt ${debt.id}:`, error);
       // Isolated — one bad candidate email must never abort the rest of this debt's sync.
     }
   }
 
-  if (!best) return noMatchResult();
-
-  const status: DebtGmailSyncStatus = best.confidence >= FOUND_CONFIDENCE_THRESHOLD ? "PAYMENT_FOUND" : "POSSIBLE_PAYMENT";
-  return {
-    status,
-    confidence: best.confidence,
-    reason: best.reason || null,
-    emailId: best.message.id,
-    emailDate: best.message.date || null,
-    sender: best.message.from || null,
-    subject: best.message.subject || null,
-  };
+  return noMatchResult();
 }

@@ -1058,6 +1058,19 @@ export async function updateDebtGmailSync(
   return getExpenseDebt(userId, id);
 }
 
+/** True if this Gmail message was already the matched evidence that marked a *different* debt paid —
+ * so one payment email can never settle two debts (see backend/gmail/debtSync.ts). */
+export async function isGmailEmailMatchedToOtherDebt(userId: number, emailId: string, debtId: number): Promise<boolean> {
+  const database = await getDb();
+  const { rows } = await database.query(
+    `SELECT 1 FROM expense_debts
+     WHERE user_id = $1 AND gmail_sync_email_id = $2 AND gmail_sync_status = 'PAYMENT_FOUND' AND id <> $3
+     LIMIT 1`,
+    [userId, emailId, debtId]
+  );
+  return rows.length > 0;
+}
+
 /**
  * Deletes one debt ("send request") and only that debt — its own send-history rows in
  * `reminders`, and the `expense_debts` row itself. Never touches `people` or `expenses`; the

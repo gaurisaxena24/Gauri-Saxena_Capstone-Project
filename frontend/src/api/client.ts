@@ -130,6 +130,10 @@ export interface GmailSyncSummary {
  * outcome (see backend/api/routes/debts.ts's /:id/sync). */
 export interface GmailSyncResult {
   status: GmailSyncResponseStatus;
+  /** The debt's status after this sync — "PAID" when a payment email matched on name + date + exact
+   * amount (the backend marks it paid in the same request), otherwise unchanged. */
+  debtStatus?: "PAID" | "UNPAID";
+  paidAt?: string | null;
   checkedAt?: string | null;
   confidence?: number | null;
   emailId?: string | null;

@@ -642,95 +642,84 @@ export function buildGmailPaymentPrompt(subject: string, bodyText: string): stri
 // ---------------------------------------------------------------------------
 // Gmail Sync — one debt, one user-initiated check (backend/gmail/debtSync.ts,
 // backend/api/routes/debts.ts's POST /:debtId/sync). Distinct from the background scanner's open
-// classification above: this checks one candidate email against ONE specific target debt (a named
-// person, an exact amount, a date) and answers "is this evidence THIS debt was paid", not "is this
-// email a payment notification at all".
+// classification above: this reads one candidate email against ONE specific target debt. The model
+// only EXTRACTS facts (is money arriving, how much, from whom, and whether that payer is the target
+// person) — it never decides "paid" on its own. backend/gmail/debtSync.ts then checks all three
+// matching signals itself (person/name + date + exact amount) and only a full match marks the debt
+// paid.
 // ---------------------------------------------------------------------------
 
 export type DebtSyncMatchStatus = "PAYMENT_FOUND" | "POSSIBLE_PAYMENT" | "NO_PAYMENT_FOUND";
 
-/** Raw model output — mapped defensively onto `DebtSyncClassification` immediately after parsing,
- * same convention as `RawGmailPaymentExtraction` above. */
-export interface RawDebtSyncClassification {
-  status: string;
-  confidence: number;
+/** Raw model output — mapped defensively onto `DebtSyncExtraction` immediately after parsing, same
+ * convention as `RawGmailPaymentExtraction` above. */
+export interface RawDebtSyncExtraction {
+  is_incoming_payment: boolean;
+  amount: number | null;
+  payer: string | null;
+  payer_matches_person: boolean;
   reason: string | null;
 }
 
-export interface DebtSyncClassification {
-  status: DebtSyncMatchStatus;
-  confidence: number;
+export interface DebtSyncExtraction {
+  /** The email says money ARRIVED to the user (not a purchase receipt, not marketing, not money the
+   * user sent out). */
+  isIncomingPayment: boolean;
+  /** The exact amount the email says was received — compared to the debt amount in code, never by
+   * the model. */
+  amount: number | null;
+  /** Payer as the email states it (name, UPI ID/VPA, or phone, possibly masked). */
+  payer: string | null;
+  /** The model's judgment that `payer` refers to the target person (allowing "Raj K." for
+   * "Raj Kumar", a masked phone sharing the last digits, etc.). */
+  payerMatchesPerson: boolean;
   reason: string;
-  /** Set when the model couldn't produce valid JSON at all — treated as "skip this candidate", not
-   * as a real NO_PAYMENT_FOUND classification (see backend/gmail/debtSync.ts). */
+  /** Set when the model couldn't produce valid JSON at all — treated as "skip this candidate". */
   extractionFailed?: boolean;
 }
 
-export function emptyDebtSyncClassification(): DebtSyncClassification {
-  return { status: "NO_PAYMENT_FOUND", confidence: 0, reason: "", extractionFailed: true };
+export function emptyDebtSyncExtraction(): DebtSyncExtraction {
+  return { isIncomingPayment: false, amount: null, payer: null, payerMatchesPerson: false, reason: "", extractionFailed: true };
 }
 
-const DEBT_SYNC_STATUSES: readonly DebtSyncMatchStatus[] = ["PAYMENT_FOUND", "POSSIBLE_PAYMENT", "NO_PAYMENT_FOUND"];
-
-export function mapRawDebtSyncClassification(raw: Partial<RawDebtSyncClassification>): DebtSyncClassification {
-  const status: DebtSyncMatchStatus = (DEBT_SYNC_STATUSES as readonly string[]).includes(raw.status as string)
-    ? (raw.status as DebtSyncMatchStatus)
-    : "NO_PAYMENT_FOUND";
+export function mapRawDebtSyncExtraction(raw: Partial<RawDebtSyncExtraction>): DebtSyncExtraction {
+  const amount = typeof raw.amount === "number" ? raw.amount : Number(raw.amount);
   return {
-    status,
-    confidence: typeof raw.confidence === "number" ? raw.confidence : 0,
+    isIncomingPayment: raw.is_incoming_payment === true,
+    amount: raw.amount != null && Number.isFinite(amount) ? amount : null,
+    payer: typeof raw.payer === "string" && raw.payer.trim() ? raw.payer.trim() : null,
+    payerMatchesPerson: raw.payer_matches_person === true,
     reason: typeof raw.reason === "string" ? raw.reason.trim() : "",
   };
 }
 
-export const DEBT_SYNC_SYSTEM_PROMPT = `You check ONE email (subject + body text) from a user's Gmail inbox against ONE specific debt the \
-user is trying to confirm was paid. You are given who owes this debt (a name, and optionally a \
-Telegram username and/or phone number), the exact amount owed, its currency, and the date the \
-underlying expense happened. Decide whether this specific email is evidence that THIS specific \
-person paid THIS specific amount for THIS specific debt — not just any payment email.
+export const DEBT_SYNC_SYSTEM_PROMPT = `You read ONE email (subject + body text) from a user's Gmail inbox and extract facts about it, \
+for checking whether ONE specific person paid the user back. You are given who owes the money (a name, \
+and optionally a Telegram username and/or phone number). You do NOT decide whether the debt is paid — \
+you only report what the email actually says.
 
-Recognize payment language broadly, including (not limited to): paid, payment, transferred, sent, \
-"paid you", "transferred the money", settled, cleared, transaction, UPI, bank transfer, "payment \
-successful". Amounts may be formatted differently than given (850 / ₹850 / INR 850 / Rs. 850 are the \
-same amount) — a formatting difference is not a reason to reject a match, but a different NUMBER is.
+Extract:
+- "is_incoming_payment": true only if the email says money ARRIVED to the user (a UPI "received" \
+notification, a bank credit alert, "X paid you", "X sent you ₹..."). false for purchase receipts, money \
+the user sent out, marketing, payment requests/reminders, or anything unrelated.
+- "amount": the exact amount received, as a plain number (₹850 / INR 850 / Rs. 850.00 → 850). null if \
+the email doesn't clearly state it. Never guess or round.
+- "payer": who the money came from, exactly as the email shows it (a name, a UPI ID/VPA, or a phone \
+number, even partially masked). null if the email doesn't say.
+- "payer_matches_person": true only if "payer" plausibly refers to the target person — a close but \
+inexact match counts ("Raj K." or "rajkumar@okaxis" for a saved "Raj Kumar", a masked phone sharing its \
+last few digits). false if the payer is someone else, or if there is no payer in the email.
+- "reason": one short, plain-language sentence (under ~25 words) a person could read directly — never a \
+dump of the email.
 
-Finding the target amount anywhere in the email is NOT enough on its own. Weigh:
-- Whether the sender/payer identified in the email (a name, a UPI ID/VPA, or a phone number, even \
-partially masked) plausibly matches the target person's name, username, or phone number. A close but \
-inexact match (e.g. "Raj K." for a saved "Raj Kumar", or a masked phone number sharing its last few \
-digits) is real, usable evidence — it doesn't need to be a perfect string match.
-- Whether the amount stated matches the target amount (allowing formatting differences only).
-- Whether the email's date is plausibly related to the target expense date. This email was already \
-pre-filtered to a date window around the expense, so treat the date itself as weak supporting \
-evidence rather than a hard requirement.
-- Whether the email is actually about money arriving (not a receipt for something the user bought, \
-not marketing, not an unrelated notification).
-
-Classify as exactly one of:
-- "PAYMENT_FOUND": strong, fairly unambiguous evidence this specific person paid this specific amount \
-for this debt.
-- "POSSIBLE_PAYMENT": relevant and plausibly connected (right amount, or a plausible payer match, or \
-both but weakly) but not confident enough to call it confirmed.
-- "NO_PAYMENT_FOUND": nothing in this email is good evidence this specific debt was paid.
-
-Never invent a fact that isn't in the email. Set "confidence" (0-1) to reflect how sure you are in \
-this specific classification — reserve high confidence (0.8-1) for a genuinely clear, well-matched \
-case; use the mid-range (0.4-0.75) when it's plausible but not certain; low confidence is expected \
-and fine for "NO_PAYMENT_FOUND". "reason" is one short, plain-language sentence (under ~25 words) a \
-person could read directly, e.g. "Sender name and amount both match, and the email says payment was \
-sent" — never a dump of the whole email.
-
-Respond with ONLY valid JSON. No markdown code fences, no prose before or after the JSON. If the \
-email clearly isn't related at all, still return the full JSON shape with "status": \
-"NO_PAYMENT_FOUND" rather than failing to produce valid JSON.`;
+Never invent a fact that isn't in the email. Respond with ONLY valid JSON. No markdown code fences, no \
+prose before or after the JSON. If the email clearly isn't a payment at all, still return the full JSON \
+shape with "is_incoming_payment": false rather than failing to produce valid JSON.`;
 
 export function buildDebtSyncPrompt(params: {
   personName: string;
   personUsername: string | null;
   personPhone: string | null;
-  amount: number;
-  currency: string | null;
-  expenseDate: string | null;
   emailSubject: string;
   emailBody: string;
 }): string {
@@ -741,10 +730,7 @@ export function buildDebtSyncPrompt(params: {
   ]
     .filter(Boolean)
     .join(", ");
-  return `Target debt to confirm:
-- Person who owes this: ${who}
-- Amount owed: ${params.amount} ${params.currency ?? ""}
-- Expense date: ${params.expenseDate ?? "unknown"}
+  return `Target person who owes the user money: ${who}
 
 Candidate email:
 Subject: ${params.emailSubject}
@@ -754,8 +740,10 @@ ${params.emailBody}
 
 Respond with ONLY this JSON shape, nothing else:
 {
-  "status": "PAYMENT_FOUND" | "POSSIBLE_PAYMENT" | "NO_PAYMENT_FOUND",
-  "confidence": number,   // 0-1
-  "reason": string        // one short, plain-language sentence
+  "is_incoming_payment": boolean,
+  "amount": number | null,
+  "payer": string | null,
+  "payer_matches_person": boolean,
+  "reason": string
 }`;
 }

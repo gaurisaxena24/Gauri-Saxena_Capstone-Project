@@ -242,8 +242,11 @@ debtsRouter.post("/:id/paid", async (req, res) => {
  * responds 200 with a structured `status` — same convention as POST /api/gmail/verify — since
  * GMAIL_NOT_CONNECTED / GMAIL_PERMISSION_REQUIRED / SYNC_ERROR are expected, non-exceptional
  * outcomes for the frontend to render, not HTTP errors. 404 is reserved for a genuinely missing or
- * not-owned debt. Never auto-marks the debt paid — that only ever happens via POST /:id/paid above,
- * as an explicit separate user action.
+ * not-owned debt. When a payment email matches on all three signals (person/name + date + exact
+ * amount — see backend/gmail/debtSync.ts), the debt is marked paid right here, through the same
+ * agent.markDebtPaid the manual POST /:id/paid uses (thank-you message, reminders stop), and the
+ * response carries the new `debtStatus`/`paidAt` so the UI flips to Paid immediately. No match →
+ * the debt is left unpaid.
  */
 debtsRouter.post("/:id/sync", async (req, res) => {
   const userId = (req as unknown as AuthedRequest).userId;
@@ -288,6 +291,7 @@ debtsRouter.post("/:id/sync", async (req, res) => {
     const expense = await debtSkill.getExpenseById(userId, debt.expense_id);
     const result = await syncDebtAgainstGmail({
       accessToken,
+      userId,
       debt,
       person,
       expenseDate: expense?.expense_date ?? null,
@@ -303,8 +307,16 @@ debtsRouter.post("/:id/sync", async (req, res) => {
       reason: result.reason,
     });
 
+    const paid = result.status === "PAYMENT_FOUND" ? await agent.markDebtPaid(userId, debt.id) : undefined;
+    if (paid) {
+      console.log(`[gmail-sync] Debt ${debt.id} (user ${userId}) matched Gmail message ${result.emailId} on name + date + amount — marked paid.`);
+    }
+    const current = paid ?? updated ?? debt;
+
     res.json({
       status: result.status,
+      debtStatus: current.status,
+      paidAt: current.paid_at,
       checkedAt: updated?.gmail_sync_checked_at ?? new Date().toISOString(),
       confidence: result.confidence,
       emailId: result.emailId,
