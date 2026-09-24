@@ -1,14 +1,19 @@
 /**
- * Escalation Skill — decides which tone an AUTOMATIC follow-up reminder uses, based on how many
+ * Escalation Skill — decides the DEFAULT tone for every reminder about a debt, based on how many
  * times this exact debt has already been successfully reminded about
- * (`ReminderContext.history.remindersForThisDebt`, from skills/contextSkill.ts). Only ever consulted
- * by the automatic reminder scheduler (backend/reminders/scheduler.ts) — the FIRST reminder for a
- * debt is the user's own manually-chosen tone, sent through the normal review flow in
- * frontend/src/pages/AddExpenseFlow.tsx, and never touches this module.
+ * (`ReminderContext.history.remindersForThisDebt`, from skills/contextSkill.ts). Used both for the
+ * first reminder (POST /debts/:id/generate-message, reviewed by the user before sending) and for
+ * every automatic follow-up (backend/reminders/scheduler.ts).
+ *
+ * The tone returned here is the ladder's default, not an order: it's passed as `ladderTone`, and the
+ * person's context (relationship, description, additionalContext) overrides it in either direction —
+ * gentler for someone going through a hard time, further along for someone the context says always
+ * ghosts — see REMINDER_SYSTEM_PROMPT's "CONTEXT OVERRIDES THE LADDER". The formal cap below is the
+ * one override enforced in code rather than left to the model.
  *
  * The ladder is a deliberate, smooth build — one step per reminder, never random:
  *
- *   reminder 1   Casual          (the user's own first send)
+ *   reminder 1   Casual          (the first send, reviewed by the user)
  *   reminder 2   Casual          (second nudge, a touch more pointed)
  *   reminder 3   Passive-Aggressive
  *   reminder 4   Annoyed
@@ -117,8 +122,10 @@ const LADDER: LadderStep[] = [
 export function escalationForFollowUp(remindersForThisDebt: number, formal: boolean): EscalationStage {
   const upcomingReminderNumber = remindersForThisDebt + 1;
   const header =
-    `This is automatic follow-up #${upcomingReminderNumber} for this exact debt, generated and sent with ` +
-    "no human review.";
+    upcomingReminderNumber === 1
+      ? "This is the FIRST reminder for this debt; the user reviews it before it's sent."
+      : `This is automatic follow-up #${upcomingReminderNumber} for this exact debt, generated and sent with ` +
+        "no human review.";
 
   if (formal) {
     const tone: Tone = upcomingReminderNumber <= 2 ? "Casual" : "Annoyed";
@@ -140,6 +147,8 @@ export function escalationForFollowUp(remindersForThisDebt: number, formal: bool
   return {
     tone: step.tone,
     stage: upcomingReminderNumber,
-    note: `${header} Escalation step: "${step.tone}". ${step.instruction} ${CONTEXT_REMINDER}`,
+    note:
+      `${header} Ladder default step: "${step.tone}" — ${step.instruction} ${CONTEXT_REMINDER} ` +
+      "This step is the default only: if the person's context calls for gentler or harsher, the context wins.",
   };
 }

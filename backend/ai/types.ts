@@ -485,6 +485,21 @@ so it's unmistakably about this debt, and every Unhinged message after the first
 genuinely DIFFERENT way from the previous one, never the same bit twice. Weird and unsettling in a \
 funny way, never scary: no threats (not even jokey ones about showing up, hurting anyone, or \
 "consequences"), no harassment, no slurs, no self-harm, no sexual content.
+CONTEXT OVERRIDES THE LADDER. The ladder step you're given is only the DEFAULT tone for this \
+reminder number. The real context always wins over it, in either direction:
+- Softer than the ladder when the context calls for it: person.description or debt.additionalContext \
+mentions something like a hard time, money trouble, grief, illness, being sensitive, "don't be \
+harsh", or a promise to pay by a date that hasn't passed yet; or the relationship is one where \
+escalating would be socially wrong (a parent, grandparent, elder, someone you depend on). Then stay \
+at a gentler step (as low as "Casual") no matter how far along the ladder this is.
+- Further along than the ladder when the context clearly licenses it: e.g. the description says \
+they always ghost / never pay / love chaos / you two roast each other, or debt.additionalContext \
+explicitly asks for a harsher or weirder message. Then you may jump ahead on the ladder (up to \
+"Unhinged"), still inside every safety rule.
+- If nothing in the context argues against it, use the ladder's default tone exactly.
+Whatever you choose, "tone" must be the tone you ACTUALLY used, and "reasoning" must say if you \
+departed from the ladder's default and which specific piece of context made you do it.
+
 Relationship still shapes every step: a close friend or sibling gets the full ladder at full \
 strength; an acquaintance gets a lighter version of each step; and person.formalityLocked caps the \
 ladder entirely (see priority rule 2 above) — the code never sends a formal person past "Annoyed", \
@@ -528,6 +543,12 @@ export function buildReminderPrompt(params: {
    * should sound like, on top of `forcedTone` — see skills/escalationSkill.ts.
    */
   escalationNote?: string;
+  /** The escalation ladder's DEFAULT tone for this reminder (skills/escalationSkill.ts) — unlike
+   * `forcedTone`, the person's context may override it (see "CONTEXT OVERRIDES THE LADDER"). */
+  ladderTone?: Tone;
+  /** True for an automatic follow-up: the previous message is an anchor to escalate FROM, rather
+   * than (for a manual Regenerate) a message to merely rephrase at the same tone. */
+  followUp?: boolean;
 }): string {
   const { history, debt } = params.context;
   const lines = [
@@ -551,13 +572,15 @@ export function buildReminderPrompt(params: {
       : ``,
     params.forcedTone
       ? `\nThe user has explicitly chosen the tone "${params.forcedTone}". Use exactly that tone.`
-      : `\nNo tone was forced — choose the best-fitting tone yourself.`,
+      : params.ladderTone
+        ? `\nEscalation ladder default for this reminder: "${params.ladderTone}". Use it unless the context overrides the ladder (see "CONTEXT OVERRIDES THE LADDER") — then use the tone the context calls for and say why in "reasoning".`
+        : `\nNo tone was forced — choose the best-fitting tone yourself.`,
     params.escalationNote ? `\n${params.escalationNote}` : ``,
   ].filter(Boolean);
   if (params.previousMessage) {
     lines.push(
-      params.escalationNote
-        ? `\nThe previous message about this exact debt was:\n"${params.previousMessage}"\nThis new message must clearly sit one step further along the escalation ladder than that exact previous message, as described above — a reader putting the two side by side should feel the build. Keep the same real expense/amount/items; do not reuse its wording, joke, or structure.`
+      params.followUp
+        ? `\nThe previous message about this exact debt was:\n"${params.previousMessage}"\nBy default this new message must clearly sit one step further along the escalation ladder than that exact previous message, as described above — a reader putting the two side by side should feel the build — unless the context overrides the ladder, in which case follow the context. Keep the same real expense/amount/items; do not reuse its wording, joke, or structure.`
         : `\nThe previous message was:\n"${params.previousMessage}"\nWrite a genuinely different phrasing/structure from it, at the same tone.`
     );
   }

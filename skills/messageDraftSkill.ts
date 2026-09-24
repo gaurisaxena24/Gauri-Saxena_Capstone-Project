@@ -85,6 +85,10 @@ function sleep(ms: number): Promise<void> {
 export async function draftReminderMessage(params: {
   context: ReminderContext;
   forcedTone?: Tone;
+  /** Default tone from the escalation ladder — context may override it. */
+  ladderTone?: Tone;
+  /** An automatic follow-up (escalate from previousMessage) vs a manual regenerate (rephrase it). */
+  followUp?: boolean;
   previousMessage?: string;
   /** Set only for an automatic escalation follow-up — see skills/escalationSkill.ts. */
   escalationNote?: string;
@@ -98,7 +102,7 @@ export async function draftReminderMessage(params: {
         maxTokens: GENERATION_MAX_TOKENS,
         reasoningEffort: "low",
       });
-      const parsed = normalizeGeneratedReminder(extractJson(raw), params.forcedTone);
+      const parsed = normalizeGeneratedReminder(extractJson(raw), params.forcedTone ?? params.ladderTone);
       if (isValidReminder(parsed)) return parsed;
       lastError = new AiRequestError("AI response was missing a valid message/tone.");
     } catch (error) {

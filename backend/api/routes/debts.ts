@@ -5,7 +5,8 @@ import * as profileSkill from "../../../skills/profileSkill.js";
 import * as reminderSkill from "../../../skills/reminderSkill.js";
 import { InvalidShareError, type ShareMode } from "../../../skills/debtCalculationSkill.js";
 import { TelegramNotVerifiedError } from "../../../skills/telegramSkill.js";
-import { AiNotConfiguredError, AiRequestError, TONES, type Tone } from "../../ai/types.js";
+import { AiNotConfiguredError, AiRequestError, TONES, type ReminderContext, type Tone } from "../../ai/types.js";
+import { escalationForFollowUp } from "../../../skills/escalationSkill.js";
 import { isGroqConfigured } from "../../ai/groqClient.js";
 import { getUserById, updateDebtGmailSync, type ExpenseDebt } from "../../database/database.js";
 import { decryptSecret } from "../../lib/credentialCrypto.js";
@@ -146,13 +147,21 @@ debtsRouter.post("/:id/generate-message", async (req, res) => {
   }
 
   const { tone, regenerate } = req.body ?? {};
-  const forcedTone = isTone(tone) ? tone : isTone(debt.tone) ? debt.tone : undefined;
+  const context: ReminderContext = JSON.parse(debt.context_json);
+  // No tone picker anymore: the tone comes from the escalation ladder (reminder 1 → Casual), and the
+  // person's context may override it. An explicit `tone` in the body is still honored for API callers.
+  const forcedTone = isTone(tone) ? tone : undefined;
+  const escalation = forcedTone
+    ? undefined
+    : escalationForFollowUp(context.history.remindersForThisDebt, context.person.formalityLocked);
 
   try {
     const { debt: updated, reasoning } = await agent.generateDraft(userId, {
       debt,
-      context: JSON.parse(debt.context_json),
+      context,
       forcedTone,
+      ladderTone: escalation?.tone,
+      escalationNote: escalation?.note,
       regenerate: Boolean(regenerate),
     });
     res.json({ ...(await toDebtPayload(userId, updated)), reasoning });

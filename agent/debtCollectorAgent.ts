@@ -139,18 +139,24 @@ export async function generateDraft(
     debt: ExpenseDebt;
     context: ReminderContext;
     forcedTone?: Tone;
+    /** The escalation ladder's default tone — the person's context may override it. */
+    ladderTone?: Tone;
     regenerate?: boolean;
-    /** Set only by the automatic reminder scheduler for an escalating follow-up — see skills/escalationSkill.ts. */
+    /** The ladder step's instructions — see skills/escalationSkill.ts. */
     escalationNote?: string;
+    /** Set only by the automatic reminder scheduler: escalate from the previous message. */
+    followUp?: boolean;
   }
 ) {
-  // Automatic escalation (escalationNote set) always needs the literal previous message too — see
-  // buildReminderPrompt's escalation-aware branch — not just a manual "Regenerate" click.
+  // An automatic follow-up always needs the literal previous message too (to escalate from it — see
+  // buildReminderPrompt's followUp branch), not just a manual "Regenerate" click (to rephrase it).
   const previousMessage =
-    params.regenerate || params.escalationNote ? params.debt.message ?? undefined : undefined;
+    params.regenerate || params.followUp ? params.debt.message ?? undefined : undefined;
   const generated = await messageDraftAgent.draftMessage({
     context: params.context,
     forcedTone: params.forcedTone,
+    ladderTone: params.ladderTone,
+    followUp: params.followUp,
     previousMessage,
     escalationNote: params.escalationNote,
   });

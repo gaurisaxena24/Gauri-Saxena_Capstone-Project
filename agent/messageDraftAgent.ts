@@ -13,6 +13,8 @@ import type { GeneratedReminder, PaidVia, ReminderContext, Tone } from "../backe
 export function draftMessage(params: {
   context: ReminderContext;
   forcedTone?: Tone;
+  ladderTone?: Tone;
+  followUp?: boolean;
   previousMessage?: string;
   escalationNote?: string;
 }): Promise<GeneratedReminder> {

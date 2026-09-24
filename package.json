@@ -15,6 +15,7 @@
     "migrate:sqlite-to-postgres": "tsx scripts/migrate-sqlite-to-postgres.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
