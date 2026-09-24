@@ -1,12 +1,19 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { getCurrentUser, login as apiLogin, logoutApi, type AuthedUser } from "../api/client";
+import {
+  getCurrentUser,
+  login as apiLogin,
+  logoutApi,
+  recoverAccount as apiRecoverAccount,
+  type AuthedUser,
+} from "../api/client";
 
 const STORAGE_KEY = "udc.user";
 
 interface AuthContextValue {
   user: AuthedUser | null;
   loading: boolean;
-  loginWithUsername: (telegramUsername: string) => Promise<void>;
+  login: (name: string) => Promise<AuthedUser>;
+  recoverAccount: (code: string) => Promise<AuthedUser>;
   logout: () => void;
 }
 
@@ -49,14 +56,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .finally(() => setLoading(false));
   }, []);
 
-  async function loginWithUsername(telegramUsername: string) {
-    const authed = await apiLogin(telegramUsername);
+  async function login(name: string) {
+    const authed = await apiLogin(name);
     setUser(authed);
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(authed));
     } catch {
       // per-viewer convenience only; app still works without persistence
     }
+    return authed;
+  }
+
+  async function recoverAccount(code: string) {
+    const authed = await apiRecoverAccount(code);
+    setUser(authed);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(authed));
+    } catch {
+      // per-viewer convenience only; app still works without persistence
+    }
+    return authed;
   }
 
   function logout() {
@@ -72,7 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, loginWithUsername, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, recoverAccount, logout }}>
       {children}
     </AuthContext.Provider>
   );

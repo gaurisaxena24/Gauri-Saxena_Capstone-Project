@@ -13,7 +13,7 @@ const FONT_SIZE_OPTIONS: Array<{ value: FontSize; label: string }> = [
 
 export function Settings() {
   const { theme, setTheme, fontSize, setFontSize } = useSettings();
-  const { logout } = useAuth();
+  const { user, logout } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [gmail, setGmail] = useState<GmailStatus | null>(null);
@@ -182,6 +182,18 @@ export function Settings() {
 
         <div className="rounded-2xl border border-border bg-card p-5">
           <h2 className="mb-3 text-sm font-semibold text-ink">Account</h2>
+          {user?.recoveryCode && (
+            <div className="mb-4">
+              <p className="text-sm text-ink-soft">Recovery code</p>
+              <p className="mt-1 font-display text-lg font-semibold tracking-wide text-ink">
+                {user.recoveryCode}
+              </p>
+              <p className="mt-1 text-xs text-ink-faint">
+                The only way back into this account from another browser or device — there's no
+                username or password. Keep it somewhere safe.
+              </p>
+            </div>
+          )}
           <button
             type="button"
             onClick={logout}

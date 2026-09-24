@@ -4,24 +4,53 @@ import { useAuth } from "../context/AuthContext";
 import { ErrorBanner } from "../components/ErrorBanner";
 
 export function Login() {
-  const { loginWithUsername } = useAuth();
+  const { login, recoverAccount } = useAuth();
   const navigate = useNavigate();
-  const [username, setUsername] = useState("");
+  const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  const [recovering, setRecovering] = useState(false);
+  const [code, setCode] = useState("");
+  const [recoverError, setRecoverError] = useState<string | null>(null);
+  const [recoverSubmitting, setRecoverSubmitting] = useState(false);
+
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (!username.trim()) return;
+    if (!name.trim()) return;
     setSubmitting(true);
     setError(null);
     try {
-      await loginWithUsername(username);
+      const authed = await login(name);
+      // Handed off via sessionStorage, not router state — the declarative redirect on the /login
+      // route (see App.tsx: user becomes truthy -> <Navigate to="/dashboard" replace/>) fires as
+      // soon as `login()` sets the user, racing this very call and replacing history without any
+      // state we'd attach here. Dashboard reads and clears this on mount instead.
+      try {
+        sessionStorage.setItem("udc.newRecoveryCode", authed.recoveryCode);
+      } catch {
+        // per-viewer convenience only — worst case the one-time banner just doesn't show
+      }
       navigate("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't log in. Try again.");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleRecoverSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (!code.trim()) return;
+    setRecoverSubmitting(true);
+    setRecoverError(null);
+    try {
+      await recoverAccount(code);
+      navigate("/dashboard");
+    } catch (err) {
+      setRecoverError(err instanceof Error ? err.message : "Couldn't sign in. Try again.");
+    } finally {
+      setRecoverSubmitting(false);
     }
   }
 
@@ -38,40 +67,81 @@ export function Login() {
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="rounded-2xl border border-border bg-card p-6 shadow-sm">
-          <label htmlFor="username" className="mb-1.5 block text-sm font-medium text-ink">
-            Your Telegram username
-          </label>
-          <div className="flex items-center rounded-lg border border-border bg-paper px-3 focus-within:border-ink">
-            <span className="text-ink-faint">@</span>
+        {!recovering ? (
+          <form onSubmit={handleSubmit} className="rounded-2xl border border-border bg-card p-6 shadow-sm">
+            <label htmlFor="name" className="mb-1.5 block text-sm font-medium text-ink">
+              What should we call you?
+            </label>
             <input
-              id="username"
+              id="name"
               autoFocus
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="your_username"
-              className="w-full bg-transparent py-2.5 pl-1 text-ink outline-none"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Your name"
+              className="w-full rounded-lg border border-border bg-paper px-3 py-2.5 text-ink outline-none focus:border-ink"
             />
-          </div>
-          <p className="mt-2 text-xs text-ink-faint">
-            This creates your own account if you're new, or signs you back into an existing one —
-            but there's no password, so anyone who knows a username can sign in as that account.
-          </p>
+            <p className="mt-2 text-xs text-ink-faint">
+              We'll use this to personalize your experience — no password needed.
+            </p>
 
-          {error && (
-            <div className="mt-4">
-              <ErrorBanner message={error} />
-            </div>
-          )}
+            {error && (
+              <div className="mt-4">
+                <ErrorBanner message={error} />
+              </div>
+            )}
 
-          <button
-            type="submit"
-            disabled={!username.trim() || submitting}
-            className="mt-5 w-full rounded-lg bg-ink py-2.5 text-sm font-semibold text-paper transition-opacity hover:opacity-90 disabled:opacity-40"
-          >
-            {submitting ? "Logging in…" : "Continue"}
-          </button>
-        </form>
+            <button
+              type="submit"
+              disabled={!name.trim() || submitting}
+              className="mt-5 w-full rounded-lg bg-ink py-2.5 text-sm font-semibold text-paper transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              {submitting ? "Continuing…" : "Continue"}
+            </button>
+          </form>
+        ) : (
+          <form onSubmit={handleRecoverSubmit} className="rounded-2xl border border-border bg-card p-6 shadow-sm">
+            <label htmlFor="code" className="mb-1.5 block text-sm font-medium text-ink">
+              Your recovery code
+            </label>
+            <input
+              id="code"
+              autoFocus
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="AB3D-9F2K"
+              className="w-full rounded-lg border border-border bg-paper px-3 py-2.5 text-ink outline-none focus:border-ink"
+            />
+            <p className="mt-2 text-xs text-ink-faint">
+              The code you saved when you first signed in — find it again in Settings once you're back in.
+            </p>
+
+            {recoverError && (
+              <div className="mt-4">
+                <ErrorBanner message={recoverError} />
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={!code.trim() || recoverSubmitting}
+              className="mt-5 w-full rounded-lg bg-ink py-2.5 text-sm font-semibold text-paper transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              {recoverSubmitting ? "Signing in…" : "Sign in"}
+            </button>
+          </form>
+        )}
+
+        <button
+          type="button"
+          onClick={() => {
+            setRecovering((r) => !r);
+            setError(null);
+            setRecoverError(null);
+          }}
+          className="mt-4 w-full text-center text-xs text-ink-faint underline-offset-2 hover:text-ink hover:underline"
+        >
+          {recovering ? "New here? Enter your name instead" : "Already have an account? Sign in with a recovery code"}
+        </button>
       </div>
     </div>
   );

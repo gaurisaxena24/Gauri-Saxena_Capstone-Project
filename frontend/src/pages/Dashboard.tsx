@@ -46,6 +46,24 @@ export function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [people, setPeople] = useState<PersonSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // Shown once, right after a fresh sign-up (see Login.tsx) — the account's only recovery code,
+  // otherwise just sitting quietly in Settings. Read from sessionStorage rather than router state:
+  // the /login route's own declarative redirect (see App.tsx: user becomes truthy -> <Navigate
+  // to="/dashboard" replace/>) fires as soon as login() sets the user, racing any state Login.tsx
+  // would try to attach to its own navigate() call.
+  const [newRecoveryCode, setNewRecoveryCode] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const code = sessionStorage.getItem("udc.newRecoveryCode");
+      if (code) {
+        setNewRecoveryCode(code);
+        sessionStorage.removeItem("udc.newRecoveryCode");
+      }
+    } catch {
+      // ignore corrupted/blocked storage — worst case the one-time banner just doesn't show
+    }
+  }, []);
 
   function load() {
     setError(null);
@@ -65,13 +83,30 @@ export function Dashboard() {
   const remindersSent = data && data.stats.totalOwed > 0 ? data.stats.remindersSent : 0;
   const allSettled = !data || data.stats.totalOwed <= 0;
   const top = people.filter((p) => p.totalOwed > 0).sort((a, b) => b.totalOwed - a.totalOwed)[0] ?? null;
-  const name = user?.telegramUsername ?? "there";
+  const name = user?.name ?? "there";
 
   return (
     <div className="space-y-6">
       <p className="text-sm text-ink-soft">
-        {greeting()}, <span className="font-semibold text-ink">{name}</span> 👋
+        {greeting()}, <span className="font-semibold text-ink">{name}</span>
       </p>
+
+      {newRecoveryCode && (
+        <div className="flex items-start justify-between gap-4 rounded-2xl border border-accent/30 bg-accent/10 p-4">
+          <p className="text-sm text-ink">
+            Save your recovery code — it's the only way back into this account from another
+            browser or device: <span className="font-display font-semibold tracking-wide">{newRecoveryCode}</span>.
+            You can find it again anytime in Settings.
+          </p>
+          <button
+            type="button"
+            onClick={() => setNewRecoveryCode(null)}
+            className="shrink-0 text-xs font-medium text-ink-faint hover:text-ink"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {error && <ErrorBanner message={error} onRetry={load} />}
 

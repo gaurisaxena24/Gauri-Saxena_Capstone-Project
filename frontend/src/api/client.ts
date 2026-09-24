@@ -50,11 +50,17 @@ const json = (body: unknown) => JSON.stringify(body);
 
 export interface AuthedUser {
   id: number;
-  telegramUsername: string;
+  name: string | null;
+  /** e.g. "AB3D-9F2K" — the only way back into this account from a browser/device with no session
+   * cookie. Shown once at signup and persistently in Settings. */
+  recoveryCode: string;
 }
 
-export const login = (telegramUsername: string) =>
-  request<AuthedUser>("/auth/login", { method: "POST", body: json({ telegramUsername }) });
+export const login = (name: string) =>
+  request<AuthedUser>("/auth/login", { method: "POST", body: json({ name }) });
+
+export const recoverAccount = (code: string) =>
+  request<AuthedUser>("/auth/login/recover", { method: "POST", body: json({ code }) });
 
 export const logoutApi = () => request<{ loggedOut: true }>("/auth/logout", { method: "POST" });
 
