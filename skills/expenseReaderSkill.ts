@@ -13,6 +13,11 @@
  * (tesseract.js) followed by a Groq text call over the extracted text. The
  * caller never has to choose between the two paths.
  *
+ * If the AI can't be reached at all (Groq rate-limited/paused and no Claude
+ * backup), the OCR text is read by backend/ai/localReceiptParser.ts instead —
+ * plain pattern matching, no AI — so an upload still becomes an expense for the
+ * user to review rather than failing with "Couldn't read that image".
+ *
  * `GROQ_TEXT_MODEL` (default openai/gpt-oss-120b) is a *reasoning* model — it
  * spends a hidden, otherwise-unbounded chain-of-thought budget out of
  * max_tokens before emitting any actual JSON. Left unchecked, on a noisier
@@ -27,7 +32,8 @@
  */
 
 import Tesseract from "tesseract.js";
-import { callGroqText, callGroqVision, getVisionModel } from "../backend/ai/groqClient.js";
+import { callGroqText, callGroqVision, getVisionModel, isAiAvailableNow } from "../backend/ai/groqClient.js";
+import { parseReceiptText } from "../backend/ai/localReceiptParser.js";
 import {
   EXPENSE_SYSTEM_PROMPT,
   EXPENSE_USER_PROMPT,
@@ -35,6 +41,7 @@ import {
   extractJson,
   mapRawExtractionToExpense,
   AiRequestError,
+  AiNotConfiguredError,
   type ExpenseExtraction,
   type RawExpenseExtraction,
 } from "../backend/ai/types.js";
@@ -91,6 +98,11 @@ async function readViaOcr(imageBuffer: Buffer): Promise<{ extraction: ExpenseExt
     return { extraction: emptyExpenseExtraction(), extractionFailed: true };
   }
 
+  if (!isAiAvailableNow()) {
+    debugLog("AI is paused/unavailable — reading the OCR text locally (no AI)");
+    return readOcrTextLocally(text);
+  }
+
   try {
     const extraction = await runExtraction(() =>
       callGroqText({
@@ -102,11 +114,24 @@ async function readViaOcr(imageBuffer: Buffer): Promise<{ extraction: ExpenseExt
     );
     return { extraction, extractionFailed: false };
   } catch (error) {
-    if (isJsonGenerationFailure(error)) {
-      return { extraction: emptyExpenseExtraction(), extractionFailed: true };
+    if (error instanceof AiRequestError || error instanceof AiNotConfiguredError) {
+      // Rate limit, outage, unparseable reply — whatever went wrong on the AI side, the OCR text is
+      // still here, so read it without AI rather than failing the whole upload.
+      console.warn(
+        `[expense-extract] AI couldn't read the OCR text (${error.message.slice(0, 120)}) — using the local no-AI reader.`
+      );
+      return readOcrTextLocally(text);
     }
     throw error;
   }
+}
+
+function readOcrTextLocally(text: string): { extraction: ExpenseExtraction; extractionFailed: boolean } {
+  const extraction = parseReceiptText(text);
+  debugLog(
+    `local reader: total=${extraction.total}, merchant=${extraction.merchant}, ${extraction.lineItems.length} item(s)`
+  );
+  return { extraction, extractionFailed: extraction.total == null && extraction.lineItems.length === 0 };
 }
 
 export async function readExpenseFromImage(imageBuffer: Buffer, mediaType: string): Promise<ExpenseReadResult> {
@@ -115,7 +140,7 @@ export async function readExpenseFromImage(imageBuffer: Buffer, mediaType: strin
     `image received: ${imageBuffer.length} bytes, mediaType=${mediaType}, visionModel=${visionModel ?? "(not set — will use OCR fallback)"}`
   );
 
-  if (visionModel) {
+  if (visionModel && isAiAvailableNow()) {
     try {
       const extraction = await runExtraction(() =>
         callGroqVision({
