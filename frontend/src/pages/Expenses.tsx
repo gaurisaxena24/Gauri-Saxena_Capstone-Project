@@ -7,6 +7,7 @@ import {
   getHealth,
   listExpenses,
   markDebtPaid,
+  removeDebt,
   removeExpense,
   sendDebtViaTelegram,
   type Expense,
@@ -22,6 +23,7 @@ import { GmailSyncControl } from "../components/GmailSync";
 interface DebtActionState {
   sending?: boolean;
   markingPaid?: boolean;
+  removing?: boolean;
   error?: string | null;
 }
 
@@ -194,6 +196,32 @@ export function Expenses() {
     }
   }
 
+  /** Deletes just this one debt (and its reminder history) — never the person or the expense. Its
+   * automatic reminders stop with it, since the scheduler only ever works on debts that exist. */
+  async function handleRemoveDebt(expenseId: number, debt: ExpenseDebtDetail) {
+    const who = debt.personName ?? "this person";
+    if (
+      !window.confirm(
+        `Remove ${who}'s debt of ${formatCurrency(debt.amount)}?\n\nThis deletes the debt and its reminder history, and stops any automatic reminders. ${who} won't be messaged. The expense and the person stay.`
+      )
+    ) {
+      return;
+    }
+    setDebtAction(debt.id, { removing: true, error: null });
+    try {
+      await removeDebt(debt.id);
+      setDebtsByExpense((prev) => ({
+        ...prev,
+        [expenseId]: (prev[expenseId] ?? []).filter((d) => d.id !== debt.id),
+      }));
+    } catch (err) {
+      setDebtAction(debt.id, {
+        removing: false,
+        error: err instanceof Error ? err.message : "Couldn't remove this debt.",
+      });
+    }
+  }
+
   async function handleRemove(expense: Expense) {
     const label = `${expense.merchant ?? expense.category ?? "this expense"} (${formatCurrency(expense.total)})`;
     if (
@@ -338,6 +366,7 @@ export function Expenses() {
                           onToggleHistory={() => toggleHistory(debt.id)}
                           onSend={() => handleSendReminder(expense.id, debt)}
                           onMarkPaid={() => handleMarkPaid(expense.id, debt)}
+                          onRemove={() => handleRemoveDebt(expense.id, debt)}
                           onSynced={(summary) => updateDebt(expense.id, debt.id, { gmailSync: summary })}
                           onGmailMarkedPaid={(paidAt) => updateDebt(expense.id, debt.id, { status: "PAID", paidAt })}
                         />
@@ -423,6 +452,7 @@ function DebtRow({
   onToggleHistory,
   onSend,
   onMarkPaid,
+  onRemove,
   onSynced,
   onGmailMarkedPaid,
 }: {
@@ -436,6 +466,7 @@ function DebtRow({
   onToggleHistory: () => void;
   onSend: () => void;
   onMarkPaid: () => void;
+  onRemove: () => void;
   onSynced: (summary: GmailSyncSummary) => void;
   onGmailMarkedPaid: (paidAt: string | null) => void;
 }) {
@@ -563,6 +594,17 @@ function DebtRow({
               </button>
             </div>
           )}
+
+          <div className="border-t border-border pt-2">
+            <button
+              type="button"
+              onClick={onRemove}
+              disabled={action.removing}
+              className="rounded-full px-3 py-1 text-xs font-medium text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] disabled:opacity-40"
+            >
+              {action.removing ? "Removing…" : "Remove debt"}
+            </button>
+          </div>
         </div>
       )}
     </div>
