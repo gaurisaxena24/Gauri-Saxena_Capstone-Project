@@ -37,4 +37,4 @@ await gen("OVERRIDE: Raj 'lost his job last month', reminder 6 (ladder says Angr
 await gen("FORMAL: professor, reminder 6", 5, base({ name: "Dr. Mehta", relationship: "professor", description: null, formalityLocked: true, telegramUsername: null }), "Hi Dr. Mehta, a small note that the ₹850 from the department dinner is still pending.", "Annoyed");
 const ty = await withRetry(() => draftThankYouMessage({ ...raj, history: { ...raj.history, remindersForThisDebt: 8, lastToneForThisDebt: "Unhinged", daysOutstanding: 19 } } as any, "gmail"));
 console.log(`\n■ THANK-YOU after 8 reminders (last one Unhinged), found by Gmail Sync\n  "${ty}"`);
-console.log("\nDONE")smth that feels modern n chic n
+console.log("\nDONE")

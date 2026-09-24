@@ -1555,6 +1555,91 @@ usernames, `People.tsx`/`AddExpenseFlow.tsx` changes) was left untouched by this
 
 ---
 
+## 2026-09-25
+### Task: Replace Telegram-username onboarding with a name field, drop the emoji from the dashboard greeting
+
+**What I asked Claude Code to do:**
+Update the onboarding/login screen to stop asking for a Telegram username (unnecessary — the
+Telegram bot connects per-contact, not to the app-owner's account) and instead ask a simple "What
+should we call you?" name question, matching a set of reference screenshots for visual language
+(off-white background, centered card, rounded corners, orange accent, "Continue" CTA). On the
+dashboard, remove the waving-hand emoji from the greeting and show the onboarding name as plain
+text instead ("Up late, gauri", no emoji). Make the name flow functional end to end.
+
+**What Claude Code did:**
+- Traced the existing login flow: `users.telegram_username` (NOT NULL UNIQUE) was both the account's
+  login identifier and its display name — typing it back in was the only passwordless way to return
+  to an existing account. Confirmed via `backend/database/database.ts` and
+  `backend/api/routes/auth.ts` that this is unrelated to the Telegram bot, which links per-contact
+  (`people.telegram_username`/`telegram_chat_id`), not to the app-owner's account.
+- Added a nullable `users.name` column (additive migration, same convention as the rest of the
+  schema) and replaced `upsertUser(telegramUsername)` with `createUser(name)`, which stores the name
+  and generates an internal 8-character recovery code (reusing the existing `people.verification_code`
+  alphabet/retry-on-collision pattern) in the now-repurposed `telegram_username` column.
+- Flagged a real regression to the user before implementing further: removing the typed username
+  meant a returning user with no valid session cookie could no longer get back to their *same*
+  account, only create a new one. Asked via AskUserQuestion; the user chose to keep a recovery path
+  rather than rely on the cookie alone.
+- Added `recoverAccount(code)` + `POST /auth/login/recover` so a saved recovery code (shown once at
+  signup via a dismissible dashboard banner, and persistently after that in Settings → Account) signs
+  back into the same account from another browser/device.
+- Updated `POST /auth/login` and `GET /auth/me` to accept/return `{ name, recoveryCode }` instead of
+  `telegramUsername`.
+- Rewrote `frontend/src/pages/Login.tsx`: primary card asks "What should we call you?" with a "Your
+  name" input and "Continue" button (same card styling as before); a secondary, visually de-emphasized
+  "Already have an account? Sign in with a recovery code" toggle reveals a second small form for
+  returning users — kept off the primary path to match the reference screenshots exactly.
+- Updated `AuthContext.tsx` (`loginWithUsername` → `login`, added `recoverAccount`), `api/client.ts`
+  (`AuthedUser` now `{ id, name, recoveryCode }`), `Layout.tsx`'s header identity chip (`@username` →
+  plain name), and `Dashboard.tsx`'s greeting (`{greeting()}, {name} 👋` → `{greeting()}, {name}`,
+  reading `user.name`).
+- Added the one-time post-signup recovery-code banner on `Dashboard.tsx`, handed off via
+  `sessionStorage` rather than React Router location state — discovered mid-implementation that the
+  `/login` route's own declarative redirect (`user ? <Navigate to="/dashboard" replace/> : <Login/>`
+  in `App.tsx`) fires as soon as `login()` sets the user, racing and dropping any state attached to
+  Login.tsx's own `navigate()` call.
+
+**Files created/modified:**
+- backend/database/database.ts
+- backend/api/routes/auth.ts
+- frontend/src/api/client.ts
+- frontend/src/context/AuthContext.tsx
+- frontend/src/pages/Login.tsx
+- frontend/src/pages/Dashboard.tsx
+- frontend/src/pages/Settings.tsx
+- frontend/src/components/Layout.tsx
+- BUILD_LOG.md
+
+**Result:**
+Completed. Onboarding asks only for a name; the dashboard greeting shows the plain name with no
+emoji; a recovery-code path preserves the ability to return to an existing account without a
+password or username.
+
+**Testing / verification:**
+`npx tsc --noEmit` passed clean in both `frontend` and `backend`. No local Postgres/Docker was
+available in this environment, and the frontend dev server already running on :5173 turned out to be
+proxying the *real deployed Railway backend with live data* — stopped short of exercising the live
+login/logout flow against it to avoid creating a real account or losing access to the real session.
+Instead spun up an isolated second Vite instance (port 5199) against a small throwaway local mock of
+`/api/auth/*`, `/api/dashboard`, etc., and drove the full flow in a real browser: name entry →
+Continue → dashboard shows the recovery-code banner once and the emoji-free greeting → Settings shows
+the same recovery code persistently → dashboard refresh no longer shows the banner → the "Already
+have an account?" toggle reveals the recovery-code form correctly. All throwaway processes were
+killed and the extra browser tab closed afterward.
+
+**Claude Code token usage:** Not available (see the automatic per-turn token usage log below).
+
+**Notes / issues / judgment calls:**
+- The recovery-code feature is scope beyond the original screenshots; added only after explicitly
+  surfacing the account-recovery regression to the user and getting their direction on it.
+- Two people naming themselves identically no longer causes any account collision — the recovery
+  code, not the name, is the unique account key, so this stays safe for the multi-tenant model
+  `createUser()`'s docstring describes.
+- Did not touch or log out of the pre-existing, already-running dev server pointed at the production
+  Railway backend (port 5173) — left it exactly as found.
+
+---
+
 ## Automatic per-turn token usage log
 
 Everything above this line is the narrative task-by-task log (one entry per unit of work, written
@@ -1833,3 +1918,4 @@ automatic logging to keep working correctly.
 - 2026-09-24 23:05:02 - 2102813 tokens (input: 2100155, output: 2658)
 - 2026-09-24 23:26:21 - 11466988 tokens (input: 11447931, output: 19057)
 - 2026-09-25 00:02:42 - 173718 tokens (input: 172363, output: 1355)
+- 2026-09-25 00:04:24 - 356306 tokens (input: 353384, output: 2922)

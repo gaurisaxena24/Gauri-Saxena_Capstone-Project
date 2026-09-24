@@ -74,7 +74,7 @@ async function addUserIdColumnAndBackfill(db: Pool, table: string): Promise<void
   }
 }
 
-/** One-time bootstrap, called from upsertUser() right after a genuinely brand-new `users` row is
+/** One-time bootstrap, called from createUser() right after a genuinely brand-new `users` row is
  * inserted: if this is truly the very first user this app has ever had log in (current total row
  * count in `users` is exactly 1 — not just "this particular insert was new", so a second or third
  * distinct signup later never misattributes another user's data), claim every still-orphaned
@@ -272,6 +272,11 @@ function ensureSchema(): Promise<void> {
     // kept, unused, rather than dropped — same precedent as the legacy `debts` table above.
     await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS google_api_key TEXT`);
 
+    // The name the app-owner gave at onboarding (see backend/api/routes/auth.ts) — used only to
+    // personalize the dashboard greeting. telegram_username on this table is unrelated to it: it's
+    // a leftover internal account key, never shown to the user or collected from them anymore.
+    await db.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS name TEXT`);
+
     // Tracks which Gmail messages the background payment scanner has already looked at (matched
     // or not), so the same email is never reclassified every tick — Gmail's own search syntax only
     // supports day-granularity dates, so a plain "since last scan" timestamp isn't reliable enough.
@@ -315,7 +320,7 @@ function ensureSchema(): Promise<void> {
     // crash the whole boot (seen once in production). addUserIdColumnAndBackfill() now only
     // tightens the constraint once every row genuinely has an owner; if `users` is empty it leaves
     // the column nullable for this boot. The very first real login then finishes the job — see
-    // claimOrphanedLegacyDataIfFirstUser() below, called from upsertUser() — which backfills these
+    // claimOrphanedLegacyDataIfFirstUser() below, called from createUser() — which backfills these
     // same rows to that first user and retries the NOT NULL tightening. No data is dropped or
     // hidden permanently either way, just deferred until there's a real owner to assign it to.
     await addUserIdColumnAndBackfill(db, "people");
@@ -384,6 +389,27 @@ function generateVerificationCode(): string {
   let code = "";
   for (let i = 0; i < 6; i++) code += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)];
   return code;
+}
+
+/** An account-recovery code (8 chars, stored contiguous, shown/entered as e.g. "AB3D-9F2K") — the
+ * only way back into an existing account from a browser/device that doesn't have its session cookie
+ * (see createUser()/recoverAccount() below). Stored in `users.telegram_username`, which predates
+ * this and is otherwise unused/unshown now. */
+function generateRecoveryCode(): string {
+  let code = "";
+  for (let i = 0; i < 8; i++) code += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)];
+  return code;
+}
+
+/** "AB3D9F2K" -> "AB3D-9F2K", for display/entry. */
+export function formatRecoveryCode(code: string): string {
+  return `${code.slice(0, 4)}-${code.slice(4)}`;
+}
+
+/** Strips spaces/dashes and uppercases, so "ab3d 9f2k", "AB3D-9F2K" and "ab3d-9f2k" all match what's
+ * stored. */
+function normalizeRecoveryCode(raw: string): string {
+  return raw.trim().replace(/[\s-]/g, "").toUpperCase();
 }
 
 function isUniqueViolation(error: unknown): boolean {
@@ -1258,6 +1284,7 @@ export async function getChatIdForUsername(username: string): Promise<string | u
 export interface UserRecord {
   id: number;
   telegram_username: string;
+  name: string | null;
   created_at: string;
   last_login_at: string;
   gmail_email: string | null;
@@ -1266,27 +1293,50 @@ export interface UserRecord {
   google_api_key: string | null;
 }
 
-/** Logging in with a Telegram username that doesn't exist yet creates an account — this app has no
- * password/signup flow, by design (see backend/api/routes/auth.ts); every app-user is a real,
- * separate tenant from here on, not "the" one user. */
-export async function upsertUser(telegramUsername: string): Promise<UserRecord> {
+/** Creates a brand-new app-user account, named at onboarding (see backend/api/routes/auth.ts) — this
+ * app has no password/signup flow beyond that name, by design; every app-user is a real, separate
+ * tenant from here on, not "the" one user. telegram_username is filled with a generated recovery
+ * code (the `users` table still requires it to be unique) — it is unrelated to the Telegram bot,
+ * which links to each *contact* (a `people` row) separately once they message it; it exists only so
+ * this same account can be recovered later from a browser/device with no session cookie (see
+ * recoverAccount() and formatRecoveryCode()). */
+export async function createUser(name: string): Promise<UserRecord> {
   const database = await getDb();
-  const username = normalizeUsername(telegramUsername);
   const now = new Date().toISOString();
-  const { rows: upserted } = await database.query<{ id: number; inserted: boolean }>(
-    `INSERT INTO users (telegram_username, created_at, last_login_at)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (telegram_username) DO UPDATE SET last_login_at = EXCLUDED.last_login_at
-     RETURNING id, (xmax = 0) AS inserted`,
-    [username, now, now]
-  );
-  const { id, inserted } = upserted[0];
-  if (inserted) {
-    // Brand-new user row — see claimOrphanedLegacyDataIfFirstUser() for why this only actually
-    // does anything when it's genuinely the very first user this app has ever had.
-    await claimOrphanedLegacyDataIfFirstUser(database, id);
+
+  let id: number | undefined;
+  for (let attempt = 1; attempt <= MAX_CODE_GENERATION_ATTEMPTS; attempt++) {
+    try {
+      const { rows } = await database.query<{ id: number }>(
+        `INSERT INTO users (telegram_username, name, created_at, last_login_at)
+         VALUES ($1, $2, $3, $3)
+         RETURNING id`,
+        [generateRecoveryCode(), name, now]
+      );
+      id = rows[0].id;
+      break;
+    } catch (error) {
+      if (!isUniqueViolation(error) || attempt === MAX_CODE_GENERATION_ATTEMPTS) throw error;
+    }
   }
-  const { rows } = await database.query<UserRecord>(`SELECT * FROM users WHERE id = $1`, [id]);
+
+  // Brand-new user row — see claimOrphanedLegacyDataIfFirstUser() for why this only actually does
+  // anything when it's genuinely the very first user this app has ever had.
+  await claimOrphanedLegacyDataIfFirstUser(database, id!);
+  const { rows: created } = await database.query<UserRecord>(`SELECT * FROM users WHERE id = $1`, [id]);
+  return created[0];
+}
+
+/** Signs back into an existing account using the recovery code shown once at signup (see
+ * createUser()) and again any time from Settings — the only way back in once a browser/device no
+ * longer has the session cookie. Returns undefined if the code doesn't match any account. */
+export async function recoverAccount(code: string): Promise<UserRecord | undefined> {
+  const database = await getDb();
+  const normalized = normalizeRecoveryCode(code);
+  const { rows } = await database.query<UserRecord>(
+    `UPDATE users SET last_login_at = $1 WHERE telegram_username = $2 RETURNING *`,
+    [new Date().toISOString(), normalized]
+  );
   return rows[0];
 }
 

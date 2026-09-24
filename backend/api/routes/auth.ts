@@ -1,26 +1,20 @@
 import { Router } from "express";
-import { createSession, deleteSession, getUserById, upsertUser } from "../../database/database.js";
+import {
+  createSession,
+  createUser,
+  deleteSession,
+  formatRecoveryCode,
+  getUserById,
+  recoverAccount,
+  type UserRecord,
+} from "../../database/database.js";
 import { readCookie, requireAuth, SESSION_COOKIE_NAME, type AuthedRequest } from "../middleware/requireAuth.js";
 
 export const authRouter = Router();
 
 const SESSION_COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, matches createSession's expiry
 
-/**
- * Login stays exactly as frictionless as it always was — type a Telegram username, no password,
- * get in (creating an account on first use). What changed is that this now issues a real,
- * server-verified session (an httpOnly cookie checked against the `sessions` table on every
- * request) instead of the frontend just trusting whatever it last saw in localStorage.
- */
-authRouter.post("/login", async (req, res) => {
-  const telegramUsername = String(req.body?.telegramUsername ?? "").trim();
-  if (!telegramUsername) {
-    res.status(400).json({ error: "Enter your Telegram username to continue." });
-    return;
-  }
-
-  const user = await upsertUser(telegramUsername);
-  const token = await createSession(user.id);
+function setSessionCookie(res: import("express").Response, token: string): void {
   res.cookie(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: "lax",
@@ -30,7 +24,52 @@ authRouter.post("/login", async (req, res) => {
     secure: Boolean(process.env.RAILWAY_ENVIRONMENT) || process.env.NODE_ENV === "production",
     maxAge: SESSION_COOKIE_MAX_AGE_MS,
   });
-  res.json({ id: user.id, telegramUsername: user.telegram_username });
+}
+
+function toAuthedJson(user: UserRecord) {
+  return { id: user.id, name: user.name, recoveryCode: formatRecoveryCode(user.telegram_username) };
+}
+
+/**
+ * Onboarding stays exactly as frictionless as it always was — no password, just a name, and you're
+ * in. It no longer asks for a Telegram username: that was never how the Telegram bot connects (the
+ * bot links to each contact/`people` row directly once they message it, not to the app-owner's
+ * account), so collecting it here only added friction. What this issues is a real, server-verified
+ * session (an httpOnly cookie checked against the `sessions` table on every request) rather than the
+ * frontend just trusting whatever it last saw in localStorage. The account also gets a recovery code
+ * (see createUser()) — the one thing the person can use to get back into this same account from
+ * elsewhere, now that there's no username to retype.
+ */
+authRouter.post("/login", async (req, res) => {
+  const name = String(req.body?.name ?? "").trim();
+  if (!name) {
+    res.status(400).json({ error: "Tell us what to call you to continue." });
+    return;
+  }
+
+  const user = await createUser(name);
+  const token = await createSession(user.id);
+  setSessionCookie(res, token);
+  res.json(toAuthedJson(user));
+});
+
+/** The "Already have an account?" path — trades a saved recovery code for a fresh session, for
+ * whoever already has an account but is on a browser/device without its session cookie. */
+authRouter.post("/login/recover", async (req, res) => {
+  const code = String(req.body?.code ?? "").trim();
+  if (!code) {
+    res.status(400).json({ error: "Enter your recovery code to continue." });
+    return;
+  }
+
+  const user = await recoverAccount(code);
+  if (!user) {
+    res.status(404).json({ error: "That recovery code doesn't match any account." });
+    return;
+  }
+  const token = await createSession(user.id);
+  setSessionCookie(res, token);
+  res.json(toAuthedJson(user));
 });
 
 authRouter.post("/logout", async (req, res) => {
@@ -49,5 +88,5 @@ authRouter.get("/me", requireAuth, async (req, res) => {
     res.status(401).json({ error: "Your session has expired. Please log in again." });
     return;
   }
-  res.json({ id: user.id, telegramUsername: user.telegram_username });
+  res.json(toAuthedJson(user));
 });

@@ -58,7 +58,7 @@ export function Layout() {
             >
               Settings
             </NavLink>
-            <span className="text-sm text-ink-faint">@{user?.telegramUsername}</span>
+            <span className="text-sm text-ink-faint">{user?.name}</span>
           </div>
         </div>
       </header>
