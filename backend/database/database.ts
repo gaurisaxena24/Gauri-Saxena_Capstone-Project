@@ -1106,10 +1106,16 @@ export async function getDashboardStats(userId: number): Promise<DashboardStats>
       [userId]
     )
   ).rows[0].v;
+  // Only reminders for debts that are still unpaid — once someone pays, their reminders stop
+  // counting (and so do thank-you messages, which are logged against already-paid debts). When
+  // nobody owes anything, this is 0.
   const remindersSent = (
-    await database.query<{ v: number }>(`SELECT COUNT(*) AS v FROM reminders WHERE status = 'SENT' AND user_id = $1`, [
-      userId,
-    ])
+    await database.query<{ v: number }>(
+      `SELECT COUNT(*) AS v FROM reminders r
+         JOIN expense_debts d ON d.id = r.debt_id AND d.user_id = r.user_id
+        WHERE r.status = 'SENT' AND r.user_id = $1 AND d.status = 'UNPAID'`,
+      [userId]
+    )
   ).rows[0].v;
   return { totalOwed: Number(totalOwed), peopleOwing: Number(peopleOwing), remindersSent: Number(remindersSent) };
 }
