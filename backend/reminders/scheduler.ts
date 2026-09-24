@@ -32,7 +32,7 @@ import { escalationForFollowUp } from "../../skills/escalationSkill.js";
 import { shouldStayFormal } from "../../skills/formalitySkill.js";
 import { getDebtsDueForAutomaticFollowUp, type ExpenseDebt } from "../database/database.js";
 import { getReminderIntervalMinutes } from "./schedulerConfig.js";
-import { groqCooldownRemainingMs } from "../ai/groqClient.js";
+import { groqCooldownRemainingMs, isAiAvailableNow } from "../ai/groqClient.js";
 
 /** Never fires more than once per debt at a time, even if a tick takes longer than the poll cadence. */
 const debtsCurrentlyProcessing = new Set<number>();
@@ -92,8 +92,9 @@ async function processDebt(userId: number, debtId: number): Promise<void> {
     const { debt: withDraft } = await agent.generateDraft(userId, {
       debt: debtWithFreshContext,
       context,
-      forcedTone: escalation.tone,
+      ladderTone: escalation.tone,
       escalationNote: escalation.note,
+      followUp: true,
     });
 
     // Close the race window between this tick starting and the user clicking "Mark as paid" — the
@@ -126,8 +127,9 @@ async function processDebt(userId: number, debtId: number): Promise<void> {
 export async function runReminderSchedulerTick(): Promise<void> {
   // Every follow-up needs Groq to write the message — while Groq has asked us to wait (e.g. the daily
   // token limit is used up), don't even try. Due debts are simply picked up on the first tick after.
+  // With the Claude backup configured, follow-ups keep going through it instead of pausing.
   const groqPausedMs = groqCooldownRemainingMs();
-  if (groqPausedMs > 0) {
+  if (!isAiAvailableNow()) {
     if (!loggedGroqPause) {
       console.log(`[reminder-scheduler] Groq is rate-limited — pausing follow-ups for ${Math.ceil(groqPausedMs / 60_000)} min.`);
       loggedGroqPause = true;

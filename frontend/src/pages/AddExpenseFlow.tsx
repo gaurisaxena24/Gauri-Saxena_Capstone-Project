@@ -39,11 +39,9 @@ function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
-// The FIRST reminder is the only one a person ever picks a tone for by hand — every reminder after
-// it is sent automatically by backend/reminders/scheduler.ts, which escalates through
-// "Passive-Aggressive" and then "Angry" on its own (see skills/escalationSkill.ts). Those two stay
-// reserved for automatic escalation, so the manual picker only ever offers these three.
-const INITIAL_TONES = ["Casual", "Funny", "Unhinged"] as const;
+// No tone picker: every reminder's tone comes from the backend's escalation ladder (the first one is
+// Casual — see skills/escalationSkill.ts), and the person's own context (relationship, description,
+// the extra context typed here) can override it. The badge shows the tone actually used.
 const PAYMENT_METHODS = ["UPI", "Google Pay", "Cash", "Card", "Bank Transfer", "Other"];
 const DESIRED_ACTIONS = [
   "Send their share",
@@ -1255,27 +1253,12 @@ export function AddExpenseFlow() {
                       <div className="mt-3 flex flex-wrap items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => runGenerateFor(r.debt.id, r.debt.tone ?? undefined, true)}
+                          onClick={() => runGenerateFor(r.debt.id, undefined, true)}
                           disabled={r.generating}
                           className="rounded-full border border-border px-3 py-1 text-xs font-medium text-ink hover:border-ink/40 disabled:opacity-40"
                         >
                           {r.generating ? "Regenerating…" : "Regenerate"}
                         </button>
-                        <div className="flex items-center gap-1">
-                          {INITIAL_TONES.map((tone) => (
-                            <button
-                              type="button"
-                              key={tone}
-                              onClick={() => runGenerateFor(r.debt.id, tone, false)}
-                              disabled={r.generating}
-                              className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                                r.debt.tone === tone ? "bg-ink text-paper" : "bg-ink/5 text-ink-soft hover:bg-ink/10"
-                              }`}
-                            >
-                              {tone}
-                            </button>
-                          ))}
-                        </div>
                         <button
                           type="button"
                           onClick={() =>

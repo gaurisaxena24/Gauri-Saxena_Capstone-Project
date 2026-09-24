@@ -1,4 +1,5 @@
 import { AiNotConfiguredError, AiRequestError } from "./types.js";
+import { callClaude, isClaudeConfigured } from "./claudeClient.js";
 
 const BASE_URL = "https://api.groq.com/openai/v1";
 const DEFAULT_TEXT_MODEL = "openai/gpt-oss-120b";
@@ -130,19 +131,47 @@ async function callChat(params: {
   return text;
 }
 
+/**
+ * Runs a Groq call, and if it fails for any AI-side reason (daily token limit / app-wide pause,
+ * outage, bad response, missing key) re-sends the same request to Claude (backend/ai/claudeClient.ts)
+ * when ANTHROPIC_API_KEY is set. Without it, the Groq error is thrown exactly as before.
+ */
+async function withClaudeBackup(
+  groqCall: () => Promise<string>,
+  claudeRequest: Parameters<typeof callClaude>[0]
+): Promise<string> {
+  try {
+    return await groqCall();
+  } catch (error) {
+    const aiSideFailure = error instanceof AiRequestError || error instanceof AiNotConfiguredError;
+    if (!aiSideFailure || !isClaudeConfigured()) throw error;
+    console.warn(`[ai] Groq unavailable (${(error as Error).message.slice(0, 120)}) — using Claude backup.`);
+    return callClaude(claudeRequest);
+  }
+}
+
+/** True if at least one AI provider can take a request right now (Groq not paused, or Claude set up). */
+export function isAiAvailableNow(): boolean {
+  return groqCooldownRemainingMs() === 0 || isClaudeConfigured();
+}
+
 export function callGroqText(params: {
   system: string;
   prompt: string;
   maxTokens?: number;
   reasoningEffort?: "low" | "medium" | "high";
 }): Promise<string> {
-  return callChat({
-    model: getTextModel(),
-    system: params.system,
-    userContent: params.prompt,
-    maxTokens: params.maxTokens,
-    reasoningEffort: params.reasoningEffort,
-  });
+  return withClaudeBackup(
+    () =>
+      callChat({
+        model: getTextModel(),
+        system: params.system,
+        userContent: params.prompt,
+        maxTokens: params.maxTokens,
+        reasoningEffort: params.reasoningEffort,
+      }),
+    { system: params.system, prompt: params.prompt }
+  );
 }
 
 export function callGroqVision(params: {
@@ -154,14 +183,18 @@ export function callGroqVision(params: {
   maxTokens?: number;
   reasoningEffort?: "low" | "medium" | "high";
 }): Promise<string> {
-  return callChat({
-    model: params.model,
-    system: params.system,
-    maxTokens: params.maxTokens,
-    reasoningEffort: params.reasoningEffort,
-    userContent: [
-      { type: "text", text: params.prompt },
-      { type: "image_url", image_url: { url: `data:${params.mediaType};base64,${params.imageBase64}` } },
-    ],
-  });
+  return withClaudeBackup(
+    () =>
+      callChat({
+        model: params.model,
+        system: params.system,
+        maxTokens: params.maxTokens,
+        reasoningEffort: params.reasoningEffort,
+        userContent: [
+          { type: "text", text: params.prompt },
+          { type: "image_url", image_url: { url: `data:${params.mediaType};base64,${params.imageBase64}` } },
+        ],
+      }),
+    { system: params.system, prompt: params.prompt, image: { base64: params.imageBase64, mediaType: params.mediaType } }
+  );
 }
