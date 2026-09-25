@@ -1329,13 +1329,18 @@ export async function createUser(name: string): Promise<UserRecord> {
 
 /** Signs back into an existing account using the recovery code shown once at signup (see
  * createUser()) and again any time from Settings — the only way back in once a browser/device no
- * longer has the session cookie. Returns undefined if the code doesn't match any account. */
+ * longer has the session cookie. Returns undefined if the code doesn't match any account.
+ *
+ * Accounts created before recovery codes existed have their original Telegram username (stored
+ * lowercase via normalizeUsername()) in telegram_username instead of a code, so that is accepted
+ * here too — otherwise those accounts, and all their data, would be unreachable. */
 export async function recoverAccount(code: string): Promise<UserRecord | undefined> {
   const database = await getDb();
-  const normalized = normalizeRecoveryCode(code);
   const { rows } = await database.query<UserRecord>(
-    `UPDATE users SET last_login_at = $1 WHERE telegram_username = $2 RETURNING *`,
-    [new Date().toISOString(), normalized]
+    `UPDATE users SET last_login_at = $1
+      WHERE id = (SELECT id FROM users WHERE telegram_username IN ($2, $3) ORDER BY id LIMIT 1)
+      RETURNING *`,
+    [new Date().toISOString(), normalizeRecoveryCode(code), normalizeUsername(code)]
   );
   return rows[0];
 }
