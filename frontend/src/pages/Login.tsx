@@ -101,7 +101,7 @@ export function Login() {
         ) : (
           <form onSubmit={handleRecoverSubmit} className="rounded-2xl border border-border bg-card p-6 shadow-sm">
             <label htmlFor="code" className="mb-1.5 block text-sm font-medium text-ink">
-              Your recovery code
+              Your recovery code or old Telegram username
             </label>
             <input
               id="code"
@@ -113,6 +113,7 @@ export function Login() {
             />
             <p className="mt-2 text-xs text-ink-faint">
               The code you saved when you first signed in — find it again in Settings once you're back in.
+              Made your account before recovery codes existed? Enter the Telegram username you used to log in.
             </p>
 
             {recoverError && (
