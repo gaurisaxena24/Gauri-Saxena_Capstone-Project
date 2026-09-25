@@ -19,7 +19,7 @@ export function getReminderIntervalMinutes(): number {
 /** Same env-var-with-fallback shape as above, for the independent Gmail payment-scan interval (see
  * backend/gmail/scanScheduler.ts) — a Gmail inbox check has a completely different natural cadence
  * than the reminder poll, so it gets its own config rather than reusing REMINDER_INTERVAL_MINUTES. */
-export const DEFAULT_GMAIL_SCAN_INTERVAL_MINUTES = 5;
+export const DEFAULT_GMAIL_SCAN_INTERVAL_MINUTES = 1;
 
 export function getGmailScanIntervalMinutes(): number {
   const raw = process.env.GMAIL_SCAN_INTERVAL_MINUTES;
